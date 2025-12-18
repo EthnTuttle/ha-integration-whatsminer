@@ -1,0 +1,50 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Whatsminer",
+        "description": "Enter the connection details for your Whatsminer ASIC miner.",
+        "data": {
+          "host": "IP Address",
+          "name": "Name (optional)",
+          "password": "Password",
+          "port": "Port",
+          "scan_interval": "Scan Interval (seconds)",
+          "power_min": "Minimum Power Limit (watts)",
+          "power_max": "Maximum Power Limit (watts)"
+        },
+        "data_description": {
+          "host": "The IP address of your Whatsminer",
+          "name": "A friendly name for this miner (defaults to IP address)",
+          "password": "The API password (default: admin)",
+          "port": "The API port (default: 4028)",
+          "scan_interval": "How often to poll the miner for updates (10-300 seconds)",
+          "power_min": "Minimum power limit for the power slider",
+          "power_max": "Maximum power limit for the power slider"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the miner. Please check the IP address and ensure the miner is online.",
+      "invalid_auth": "Invalid authentication. Please check the password.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This miner is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Whatsminer Options",
+        "description": "Adjust settings for this Whatsminer.",
+        "data": {
+          "password": "Password",
+          "scan_interval": "Scan Interval (seconds)",
+          "power_min": "Minimum Power Limit (watts)",
+          "power_max": "Maximum Power Limit (watts)"
+        }
+      }
+    }
+  }
+}

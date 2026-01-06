@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import logging
+import re
 from datetime import timedelta, datetime
 from typing import Any
 
@@ -18,6 +21,11 @@ try:
     from passlib.hash import md5_crypt
 except ImportError:
     md5_crypt = None
+
+try:
+    from Crypto.Cipher import AES
+except ImportError:
+    AES = None
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,46 +51,96 @@ DEFAULT_DATA = {
 }
 
 
+def _md5_crypt(word: str, salt: str) -> str:
+    """Perform MD5 crypt with the given salt."""
+    if md5_crypt is None:
+        raise Exception("passlib is required for Whatsminer authentication")
+    
+    standard_salt = re.compile(r'\s*\$(\d+)\$([\w\./]*)\$')
+    match = standard_salt.match(salt)
+    if not match:
+        raise ValueError(f"salt format is not correct: {salt}")
+    extra_str = match.group(2)
+    result = md5_crypt.hash(word, salt=extra_str)
+    return result
+
+
+def _add_to_16(s: str) -> bytes:
+    """Pad string to 16-byte boundary for AES encryption."""
+    while len(s) % 16 != 0:
+        s += '\0'
+    return s.encode()
+
+
 class WhatsminerAPI:
-    """Direct API communication with Whatsminer via TCP."""
+    """Direct API communication with Whatsminer via TCP.
+    
+    Implements the Whatsminer API protocol which requires:
+    - Read-only commands: sent as plaintext JSON with {"cmd": "command"}
+    - Privileged commands: AES-256-ECB encrypted, base64 encoded
+    """
 
     def __init__(self, host: str, port: int, password: str = "admin"):
         """Initialize API."""
         self.host = host
         self.port = port
         self.password = password
-        self._token_cache: dict[str, Any] | None = None
+        self._cipher = None
+        self._sign: str | None = None
+        self._token_timestamp: datetime | None = None
 
-    async def send_command(self, command: str, timeout: int = 5) -> dict | None:
-        """Send command to miner and get response."""
+    async def _send_raw(self, message: str, timeout: int = 10) -> bytes:
+        """Send raw message to miner and get response bytes."""
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(self.host, self.port),
+            timeout=timeout
+        )
+        
+        _LOGGER.debug(f"Sending to {self.host}: {message[:200]}")
+        writer.write(message.encode('utf-8'))
+        await writer.drain()
+        
+        # Read response - read until connection closes or we get enough data
+        chunks = []
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=timeout
-            )
-            
-            # Whatsminer API format: {"command": "summary"}
-            message = json.dumps({"command": command})
-            _LOGGER.debug(f"Sending to {self.host}: {message}")
-            
-            writer.write(message.encode('utf-8'))
-            await writer.drain()
-            
-            # Read response
-            data = await asyncio.wait_for(reader.read(8192), timeout=timeout)
-            writer.close()
-            await writer.wait_closed()
+            while True:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                # If we got a complete JSON response, we can stop
+                data = b''.join(chunks)
+                try:
+                    # Try to parse - if it works, we have complete data
+                    data.decode('utf-8', errors='ignore').strip().replace('\x00', '')
+                    if data.endswith(b'}') or data.endswith(b'}\x00'):
+                        break
+                except:
+                    pass
+        except asyncio.TimeoutError:
+            pass  # Timeout is expected when done reading
+        
+        writer.close()
+        await writer.wait_closed()
+        
+        return b''.join(chunks)
+
+    async def send_command(self, cmd: str, timeout: int = 5) -> dict | None:
+        """Send read-only command to miner and get response.
+        
+        Uses the format: {"cmd": "command_name"}
+        """
+        try:
+            message = json.dumps({"cmd": cmd})
+            data = await self._send_raw(message, timeout)
             
             if not data:
                 _LOGGER.warning(f"Empty response from {self.host}")
                 return None
             
             # Parse JSON response
-            response_str = data.decode('utf-8', errors='ignore').strip()
+            response_str = data.decode('utf-8', errors='ignore').strip().replace('\x00', '')
             _LOGGER.debug(f"Received from {self.host}: {response_str[:200]}")
-            
-            # Remove any null bytes
-            response_str = response_str.replace('\x00', '')
             
             return json.loads(response_str)
             
@@ -115,71 +173,75 @@ class WhatsminerAPI:
         """Get detailed stats including temps and fans."""
         return await self.send_command("stats")
 
-    async def get_token(self) -> dict[str, Any]:
-        """Get authentication token from miner.
+    async def _initialize_write_access(self) -> None:
+        """Initialize write access by getting token and setting up encryption.
         
-        Returns a dict with token info needed for privileged commands.
+        The Whatsminer API requires:
+        1. Get token (salt, newsalt, time) from miner
+        2. Create AES key from password + salt
+        3. Create sign from key + time + newsalt
+        4. Use AES-256-ECB encryption for all privileged commands
         """
-        # Check cache (tokens valid for 30 min)
-        if self._token_cache:
-            age = datetime.now() - self._token_cache.get("timestamp", datetime.min)
-            if age.total_seconds() < 1800:  # 30 minutes
-                _LOGGER.debug(f"Using cached token for {self.host}")
-                return self._token_cache
+        if AES is None:
+            raise Exception("pycryptodome is required for Whatsminer write commands. Install with: pip install pycryptodome")
         
-        _LOGGER.debug(f"Requesting new token from {self.host}")
+        if md5_crypt is None:
+            raise Exception("passlib is required for Whatsminer authentication. Install with: pip install passlib")
+        
+        _LOGGER.debug(f"Initializing write access for {self.host}")
+        
+        # Get token from miner
         token_data = await self.send_command("get_token")
         
         if not token_data:
             raise Exception("Failed to get token from miner - no response")
         
-        if "Msg" not in token_data:
-            _LOGGER.error(f"Token response missing 'Msg': {token_data}")
-            raise Exception("Failed to get token from miner - invalid response")
-        
         msg = token_data.get("Msg", {})
+        if msg == "over max connect":
+            raise Exception("Miner returned 'over max connect' - too many connections")
+        
+        if not isinstance(msg, dict):
+            raise Exception(f"Invalid token response: {token_data}")
+        
         salt = msg.get("salt", "")
         newsalt = msg.get("newsalt", "")
         time_str = msg.get("time", "")
         
         if not all([salt, newsalt, time_str]):
-            raise Exception(f"Token response missing required fields: salt={salt}, newsalt={newsalt}, time={time_str}")
+            raise Exception(f"Token response missing required fields: {msg}")
         
-        # Encrypt password with salt using MD5 crypt
-        if md5_crypt:
-            pwd = md5_crypt.using(salt=salt).hash(self.password)
-            pwd_parts = pwd.split("$")
-            host_passwd_md5 = pwd_parts[3] if len(pwd_parts) > 3 else pwd
-            
-            # Encrypt again with time and newsalt
-            tmp = md5_crypt.using(salt=newsalt).hash(host_passwd_md5 + time_str)
-            tmp_parts = tmp.split("$")
-            host_sign = tmp_parts[3] if len(tmp_parts) > 3 else tmp
-        else:
-            # Fallback MD5 (less secure but works)
-            _LOGGER.warning("passlib not available, using basic MD5 hashing")
-            host_passwd_md5 = hashlib.md5(f"{salt}{self.password}".encode()).hexdigest()
-            host_sign = hashlib.md5(f"{newsalt}{host_passwd_md5}{time_str}".encode()).hexdigest()
+        # Make the encrypted key from the admin password and the salt
+        pwd = _md5_crypt(self.password, "$1$" + salt + "$")
+        pwd_parts = pwd.split("$")
+        key = pwd_parts[3] if len(pwd_parts) > 3 else pwd
         
-        self._token_cache = {
-            "host_sign": host_sign,
-            "host_passwd_md5": host_passwd_md5,
-            "time": time_str,
-            "timestamp": datetime.now()
-        }
+        # Make the aeskey from the key computed above and prep the AES cipher
+        aeskey = hashlib.sha256(key.encode()).hexdigest()
+        aeskey_bytes = binascii.unhexlify(aeskey.encode())
+        self._cipher = AES.new(aeskey_bytes, AES.MODE_ECB)
         
-        _LOGGER.debug(f"Got new token for {self.host}")
-        return self._token_cache
+        # Make the 'sign' that is passed in as 'token'
+        tmp = _md5_crypt(key + time_str, "$1$" + newsalt + "$")
+        tmp_parts = tmp.split("$")
+        self._sign = tmp_parts[3] if len(tmp_parts) > 3 else tmp
+        
+        self._token_timestamp = datetime.now()
+        _LOGGER.debug(f"Write access initialized for {self.host}")
 
-    def _build_token_string(self, token_info: dict[str, Any]) -> str:
-        """Build the token string for authenticated commands.
+    def _has_valid_write_access(self) -> bool:
+        """Check if we have valid write access (token not expired)."""
+        if self._cipher is None or self._sign is None or self._token_timestamp is None:
+            return False
         
-        Format: admin$time$host_sign
-        """
-        return f"admin${token_info['time']}${token_info['host_sign']}"
+        # Token expires after 30 minutes
+        age = (datetime.now() - self._token_timestamp).total_seconds()
+        return age < 1800  # 30 minutes
 
     async def send_privileged_command(self, cmd: str, **kwargs) -> dict:
         """Send a privileged command requiring authentication.
+        
+        Privileged commands are AES-256-ECB encrypted and base64 encoded.
+        Format: {"enc": 1, "data": "<base64_encrypted_payload>"}
         
         Args:
             cmd: The command to send (e.g., 'power_off', 'power_on')
@@ -191,110 +253,102 @@ class WhatsminerAPI:
         _LOGGER.info(f"Sending privileged command '{cmd}' to {self.host}")
         
         try:
-            # Get authentication token
-            token_info = await self.get_token()
-            token_str = self._build_token_string(token_info)
+            # Ensure we have valid write access
+            if not self._has_valid_write_access():
+                await self._initialize_write_access()
             
-            # Build command with token
-            cmd_data = {
-                "cmd": cmd,
-                "token": token_str,
-                **kwargs
-            }
-            cmd_str = json.dumps(cmd_data)
+            # Build the plaintext command
+            cmd_data = {"cmd": cmd, "token": self._sign}
+            cmd_data.update(kwargs)
+            api_cmd = json.dumps(cmd_data)
             
-            _LOGGER.debug(f"Sending authenticated command to {self.host}: {cmd_str}")
+            _LOGGER.debug(f"Plaintext command: {api_cmd}")
             
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=15
-            )
+            # Encrypt with AES-256-ECB and base64 encode
+            encrypted = self._cipher.encrypt(_add_to_16(api_cmd))
+            enc_str = base64.encodebytes(encrypted).decode('utf-8').replace('\n', '')
             
-            writer.write(cmd_str.encode('utf-8'))
-            await writer.drain()
+            # Build the transport packet
+            packet = json.dumps({"enc": 1, "data": enc_str})
             
-            # Read response
-            data = await asyncio.wait_for(reader.read(8192), timeout=15)
-            writer.close()
-            await writer.wait_closed()
+            _LOGGER.debug(f"Sending encrypted command to {self.host}")
+            
+            # Send and receive
+            data = await self._send_raw(packet, timeout=15)
             
             if not data:
                 raise Exception("Empty response from command")
             
             # Parse response
             response_str = data.decode('utf-8', errors='ignore').strip().replace('\x00', '')
-            _LOGGER.info(f"Response from {self.host}: {response_str[:300]}")
+            _LOGGER.debug(f"Raw response: {response_str[:300]}")
             
             response = json.loads(response_str)
             
-            # Check response status
-            if "STATUS" in response:
-                status_list = response.get("STATUS", [])
-                if isinstance(status_list, list) and len(status_list) > 0:
-                    status = status_list[0]
-                    if status.get("STATUS") == "S":
-                        _LOGGER.info(f"Command '{cmd}' successful on {self.host}")
-                        return response
-                    elif status.get("STATUS") == "E":
-                        error_msg = status.get("Msg", "Unknown error")
-                        _LOGGER.error(f"Command '{cmd}' failed on {self.host}: {error_msg}")
-                        
-                        # If token error, clear cache and retry once
-                        if "token" in error_msg.lower() or "auth" in error_msg.lower():
-                            _LOGGER.info("Token error detected, clearing cache and retrying...")
-                            self._token_cache = None
-                            return await self._retry_privileged_command(cmd, **kwargs)
-                        
-                        raise Exception(f"Miner returned error: {error_msg}")
-                    else:
-                        # Other status, log and return
-                        _LOGGER.warning(f"Command '{cmd}' returned status: {status}")
-                        return response
+            # Check for error status (unencrypted error response)
+            if response.get("STATUS") == "E":
+                error_msg = response.get("Msg", "Unknown error")
+                _LOGGER.error(f"Command '{cmd}' failed on {self.host}: {error_msg}")
+                
+                # If token/auth error, clear cache and retry once
+                if "token" in error_msg.lower() or "auth" in error_msg.lower() or "invalid" in error_msg.lower():
+                    _LOGGER.info("Token error detected, reinitializing and retrying...")
+                    self._cipher = None
+                    self._sign = None
+                    await self._initialize_write_access()
+                    return await self._send_privileged_command_internal(cmd, **kwargs)
+                
+                raise Exception(f"Miner returned error: {error_msg}")
             
-            # If no STATUS field, return response as-is
+            # Decrypt the response if it's encrypted
+            if "enc" in response:
+                resp_ciphertext = base64.b64decode(response["enc"])
+                resp_plaintext = self._cipher.decrypt(resp_ciphertext).decode().split("\x00")[0]
+                response = json.loads(resp_plaintext)
+                _LOGGER.debug(f"Decrypted response: {response}")
+            
+            _LOGGER.info(f"Command '{cmd}' successful on {self.host}")
             return response
             
         except Exception as err:
             _LOGGER.error(f"Failed to execute command '{cmd}' on {self.host}: {err}")
             raise
 
-    async def _retry_privileged_command(self, cmd: str, **kwargs) -> dict:
-        """Retry a privileged command after token refresh."""
-        token_info = await self.get_token()
-        token_str = self._build_token_string(token_info)
+    async def _send_privileged_command_internal(self, cmd: str, **kwargs) -> dict:
+        """Internal method to send privileged command without retry logic."""
+        cmd_data = {"cmd": cmd, "token": self._sign}
+        cmd_data.update(kwargs)
+        api_cmd = json.dumps(cmd_data)
         
-        cmd_data = {
-            "cmd": cmd,
-            "token": token_str,
-            **kwargs
-        }
-        cmd_str = json.dumps(cmd_data)
+        encrypted = self._cipher.encrypt(_add_to_16(api_cmd))
+        enc_str = base64.encodebytes(encrypted).decode('utf-8').replace('\n', '')
+        packet = json.dumps({"enc": 1, "data": enc_str})
         
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(self.host, self.port),
-            timeout=15
-        )
-        
-        writer.write(cmd_str.encode('utf-8'))
-        await writer.drain()
-        
-        data = await asyncio.wait_for(reader.read(8192), timeout=15)
-        writer.close()
-        await writer.wait_closed()
+        data = await self._send_raw(packet, timeout=15)
         
         if not data:
-            raise Exception("Empty response from retry command")
+            raise Exception("Empty response from command")
         
         response_str = data.decode('utf-8', errors='ignore').strip().replace('\x00', '')
-        return json.loads(response_str)
+        response = json.loads(response_str)
+        
+        if response.get("STATUS") == "E":
+            raise Exception(f"Miner returned error: {response.get('Msg', 'Unknown error')}")
+        
+        if "enc" in response:
+            resp_ciphertext = base64.b64decode(response["enc"])
+            resp_plaintext = self._cipher.decrypt(resp_ciphertext).decode().split("\x00")[0]
+            response = json.loads(resp_plaintext)
+        
+        return response
 
     async def power_on(self) -> dict:
         """Power on hashboards and start mining."""
-        return await self.send_privileged_command("power_on")
+        return await self.send_privileged_command("power_on", respbefore="true")
 
     async def power_off(self) -> dict:
         """Power off hashboards and stop mining."""
-        return await self.send_privileged_command("power_off")
+        return await self.send_privileged_command("power_off", respbefore="true")
 
     async def set_power_limit(self, power_limit: int) -> dict:
         """Set the power limit in watts."""

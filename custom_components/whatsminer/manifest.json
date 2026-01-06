@@ -6,6 +6,6 @@
   "documentation": "https://github.com/yourusername/whatsminer-integration",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/yourusername/whatsminer-integration/issues",
-  "requirements": ["passlib>=1.7.4"],
-  "version": "1.0.0"
+  "requirements": ["passlib>=1.7.4", "pycryptodome>=3.20.0"],
+  "version": "1.0.1"
 }

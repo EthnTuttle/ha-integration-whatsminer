@@ -169,9 +169,9 @@ class WhatsminerAPI:
         """Get device (hashboard) details."""
         return await self.send_command("devs")
 
-    async def get_stats(self) -> dict | None:
-        """Get detailed stats including temps and fans."""
-        return await self.send_command("stats")
+    async def get_miner_info(self) -> dict | None:
+        """Get miner device info (hostname, MAC, IP)."""
+        return await self.send_command("get_miner_info")
 
     async def _initialize_write_access(self) -> None:
         """Initialize write access by getting token and setting up encryption.
@@ -392,18 +392,38 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=scan_interval),
         )
 
+    def _parse_miner_info(self, data: dict) -> dict:
+        """Parse get_miner_info response for device identification."""
+        result = {}
+        if not data:
+            return result
+        # New firmware: {"STATUS": "S", ..., "Msg": {...}}
+        msg = data.get("Msg", {})
+        if not isinstance(msg, dict):
+            return result
+        result["hostname"] = msg.get("hostname")
+        result["mac"] = msg.get("mac", "").replace(":", "_").lower()
+        result["ip"] = msg.get("ip")
+        return result
+
     def _parse_summary(self, data: dict) -> dict:
         """Parse summary response."""
         result = {}
-        
-        if not data or "SUMMARY" not in data:
+
+        if not data:
             return result
-        
-        summary_list = data.get("SUMMARY", [])
-        if not summary_list:
+
+        # New firmware: {"STATUS": "S", ..., "Msg": {flat dict}}
+        # Old firmware: {"SUMMARY": [{...}], "STATUS": [...]}
+        if "Msg" in data and isinstance(data["Msg"], dict):
+            summary = data["Msg"]
+        elif "SUMMARY" in data:
+            summary_list = data.get("SUMMARY", [])
+            if not summary_list:
+                return result
+            summary = summary_list[0] if isinstance(summary_list, list) else summary_list
+        else:
             return result
-        
-        summary = summary_list[0] if isinstance(summary_list, list) else summary_list
         
         # Hashrate (convert MH/s to TH/s)
         result["hashrate"] = summary.get("MHS av", 0) / 1_000_000
@@ -449,57 +469,25 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         result["is_mining"] = elapsed > 0 and hashrate > 0
         
         result["uptime"] = elapsed
-        result["accepted"] = summary.get("Accepted", 0)
-        result["rejected"] = summary.get("Rejected", 0)
-        
+        # Accepted/Rejected may be in summary (old firmware) or in pools (new firmware)
+        result["accepted"] = summary.get("Accepted", None)
+        result["rejected"] = summary.get("Rejected", None)
+
         return result
 
-    def _parse_stats(self, data: dict) -> dict:
-        """Parse stats response for temps, fans, power."""
+    def _parse_pools(self, data: dict) -> dict:
+        """Parse pools response to aggregate accepted/rejected share counts."""
         result = {}
-        
-        if not data or "STATS" not in data:
+        if not data:
             return result
-        
-        stats_list = data.get("STATS", [])
-        if not stats_list or len(stats_list) < 2:
+        # New firmware: {"STATUS": [...], "POOLS": [...]}
+        pools = data.get("POOLS", [])
+        if not pools:
             return result
-        
-        # Usually stats[1] has the miner details
-        stats = stats_list[1] if len(stats_list) > 1 else stats_list[0]
-        
-        # Model and firmware
-        result["model"] = stats.get("Type", "Unknown")
-        result["fw_ver"] = stats.get("Software", "Unknown")
-        
-        # Power
-        result["wattage"] = stats.get("Power", 0)
-        result["wattage_limit"] = stats.get("Power Limit", 0)
-        
-        # Temperature - try multiple field names
-        temps = []
-        for i in range(10):  # Check up to 10 temp sensors
-            temp_key = f"Temperature{i}" if i > 0 else "Temperature"
-            if temp_key in stats:
-                temps.append(stats[temp_key])
-        
-        if temps:
-            result["temperature_avg"] = sum(temps) / len(temps)
-            result["temperature_max"] = max(temps)
-        
-        # Fans - collect all fan speeds
-        fans = []
-        for i in range(10):  # Check up to 10 fans
-            fan_key = f"Fan Speed {i+1}"
-            if fan_key in stats:
-                fans.append({"speed": stats[fan_key]})
-        
-        result["fans"] = fans
-        
-        # Calculate efficiency if we have both hashrate and power
-        if "hashrate" in result and result.get("wattage", 0) > 0:
-            result["efficiency"] = result["wattage"] / result["hashrate"]
-        
+        accepted = sum(p.get("Accepted", 0) for p in pools)
+        rejected = sum(p.get("Rejected", 0) for p in pools)
+        result["accepted"] = accepted
+        result["rejected"] = rejected
         return result
 
     def _parse_devs(self, data: dict) -> list:
@@ -512,22 +500,24 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         devs = data.get("DEVS", [])
         
         for idx, dev in enumerate(devs):
-            hashrate = dev.get("MHS av", 0) / 1_000_000  # MH/s to TH/s
-            
-            # Whatsminer uses "Chip Temp Avg", otherwise fallback to "Temperature"
-            chip_temp = dev.get("Chip Temp Avg", 0)
-            if chip_temp == 0:
-                chip_temp = dev.get("Chip Temp", 0)
-            
-            # PCB temperature
-            temp = dev.get("Temperature", chip_temp)
-            
+            mhs_av = dev.get("MHS av", 0)
+            # Old firmware: MHS av is in MH/s (values ~30,000,000+), convert to TH/s
+            # New firmware: MHS av is already in TH/s (values ~30-100)
+            hashrate = mhs_av / 1_000_000 if mhs_av > 1000 else mhs_av
+            slot = dev.get("Slot", idx)
+
+            # PCB / board temperature
+            temp = dev.get("Temperature", 0)
+
+            # New firmware has no per-board chip temp; use Chip Temp Avg/Chip Temp if present
+            chip_temp = dev.get("Chip Temp Avg", dev.get("Chip Temp", temp))
+
             hashboards.append({
-                "slot": idx,
+                "slot": slot,
                 "temp": temp,
                 "chip_temp": chip_temp,
                 "hashrate": round(hashrate, 2),
-                "status": dev.get("Status", "Unknown"),
+                "status": dev.get("Status", "Alive"),
             })
         
         return hashboards
@@ -538,37 +528,53 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             _LOGGER.debug(f"Fetching data from {self.miner_ip}")
             
             # Fetch all data in parallel
-            summary_data, stats_data, devs_data = await asyncio.gather(
+            summary_data, miner_info_data, devs_data, pools_data = await asyncio.gather(
                 self.api.get_summary(),
-                self.api.get_stats(),
+                self.api.get_miner_info(),
                 self.api.get_devs(),
+                self.api.get_pools(),
                 return_exceptions=True
             )
-            
+
             # Check if all requests failed
-            if all(x is None or isinstance(x, Exception) for x in [summary_data, stats_data, devs_data]):
+            if all(x is None or isinstance(x, Exception) for x in [summary_data, miner_info_data, devs_data, pools_data]):
                 self._failure_count += 1
-                
+
                 if self._failure_count == 1:
                     _LOGGER.warning(f"Miner at {self.miner_ip} is offline - returning zeroed data")
                     return DEFAULT_DATA.copy()
-                
+
                 raise UpdateFailed(f"Miner at {self.miner_ip} is offline")
-            
+
             # Parse responses
             data = DEFAULT_DATA.copy()
             data["ip"] = self.miner_ip
             data["mac"] = f"whatsminer_{self.miner_ip.replace('.', '_')}"
-            
+
+            if miner_info_data and not isinstance(miner_info_data, Exception):
+                info = self._parse_miner_info(miner_info_data)
+                if info.get("mac"):
+                    data.update(info)
+
             if summary_data and not isinstance(summary_data, Exception):
                 data.update(self._parse_summary(summary_data))
-            
-            if stats_data and not isinstance(stats_data, Exception):
-                data.update(self._parse_stats(stats_data))
-            
+
             if devs_data and not isinstance(devs_data, Exception):
                 data["hashboards"] = self._parse_devs(devs_data)
-            
+
+            # Accepted/Rejected: prefer pools aggregation (new firmware), fall back to summary
+            if pools_data and not isinstance(pools_data, Exception):
+                pool_stats = self._parse_pools(pools_data)
+                if pool_stats.get("accepted") is not None:
+                    data["accepted"] = pool_stats["accepted"]
+                if pool_stats.get("rejected") is not None:
+                    data["rejected"] = pool_stats["rejected"]
+            # If still None (neither source had it), default to 0
+            if data.get("accepted") is None:
+                data["accepted"] = 0
+            if data.get("rejected") is None:
+                data["rejected"] = 0
+
             # Reset failure count on success
             self._failure_count = 0
             

@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Claude Code
+.claude/
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db

@@ -6,6 +6,7 @@ __pycache__/
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Editor / OS
 .vscode/

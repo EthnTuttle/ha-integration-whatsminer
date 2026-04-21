@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Add Whatsminer",
+        "title": "Add Whatsminer (Ethan's Mod)",
         "description": "Enter the connection details for your Whatsminer ASIC miner.",
         "data": {
           "host": "IP Address",

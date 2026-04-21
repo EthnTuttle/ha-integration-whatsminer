@@ -1,6 +1,6 @@
 {
   "domain": "whatsminer",
-  "name": "Exergy - Whatsminer",
+  "name": "Exergy - Whatsminer (Ethan's Mod)",
   "codeowners": ["@EthnTuttle"],
   "config_flow": true,
   "documentation": "https://github.com/EthnTuttle/ha-integration-whatsminer",

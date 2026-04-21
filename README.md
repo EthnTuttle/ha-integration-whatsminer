@@ -1,4 +1,4 @@
-# Exergy - Whatsminer Integration for Home Assistant
+# Exergy - Whatsminer (Ethan's Mod) Integration for Home Assistant
 
 A Home Assistant custom integration for MicroBT Whatsminer ASIC miners, designed for use with Exergy heat recovery systems.
 

@@ -19,6 +19,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
+    CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_KD,
     CONF_PID_KI,
@@ -27,6 +28,7 @@ from .const import (
     CONF_POWER_MAX,
     CONF_POWER_MIN,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
+    DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PASSWORD,
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
@@ -202,6 +204,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=60, max=100)),
+                    vol.Optional(
+                        CONF_DEFAULT_POWER_LIMIT,
+                        default=current_data.get(
+                            CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
                 }
             ),
         )

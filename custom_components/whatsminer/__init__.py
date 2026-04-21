@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
+    CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_KD,
     CONF_PID_KI,
@@ -17,6 +18,7 @@ from .const import (
     CONF_POWER_MAX,
     CONF_POWER_MIN,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
+    DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PASSWORD,
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
@@ -69,7 +71,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return entry.options.get(key, entry.data.get(key, default))
 
     # Store coordinator and config for platforms to use. pid_state is a mutable
-    # dict shared between the climate entity (writer) and the diagnostic PID
+    # dict shared between the PID Mode switch (writer) and the diagnostic PID
     # sensors (readers) so both platforms see the same numbers on each tick.
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": coordinator,
@@ -83,6 +85,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_EXTERNAL_TEMP_SENSOR: _opt(CONF_EXTERNAL_TEMP_SENSOR, None),
             CONF_CHIP_TEMP_SAFETY_CAP: _opt(
                 CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
+            ),
+            CONF_DEFAULT_POWER_LIMIT: _opt(
+                CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
             ),
         },
         "pid_state": {

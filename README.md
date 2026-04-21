@@ -10,10 +10,11 @@ Tested with firmware: `Whatsminer-all-20251209.16`
 - **Per-hashboard sensors**: Board Temperature, Chip Temperature, Board Hashrate
 - **Fan sensors**: Fan Speed (RPM) — when applicable
 - **Binary Sensor**: Mining Status (running/not running)
-- **Switch**: Mining Control (start/stop mining)
-- **Number**: Power Limit slider (adjust wattage cap)
-- **Climate (PID)**: Temperature-targeted power modulation — target the miner's chip temp *or any Home Assistant temperature sensor* (e.g. a boiler loop, a storage tank) and the integration adjusts power to hold it
+- **Switches**: Mining Control (start/stop mining); **PID Mode** (enable/disable temperature-targeted power modulation)
+- **Numbers**: Power Limit (slider, blocked while PID Mode is on); **PID Target Temperature** (setpoint, dashboard-adjustable)
+- **Temperature targeting**: the PID targets the miner's chip temp by default, or any Home Assistant temperature sensor (e.g. a boiler loop, a storage tank) — see the external-sensor section below
 - **Chip-temp safety cap**: when an external sensor drives the loop, a configurable chip-temp ceiling clamps power to minimum if the miner overheats
+- **PID-off fallback**: when PID Mode is turned off, the miner reverts to a configurable **Default Power Limit** (defaults to the configured maximum) instead of getting stuck at whatever wattage the PID last commanded
 - **PID diagnostic sensors**: Target, Error, Proportional, Integral, Derivative, Output, Requested Output — plus a "PID Safety Engaged" binary sensor — for charting and tuning
 
 ## Installation via HACS

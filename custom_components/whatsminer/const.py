@@ -9,7 +9,6 @@ PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.SWITCH,
     Platform.NUMBER,
-    Platform.CLIMATE,
 ]
 
 # Configuration keys
@@ -26,6 +25,7 @@ CONF_PID_KD = "pid_kd"
 CONF_PID_TARGET_TEMP = "pid_target_temp"
 CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
 CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
+CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -42,6 +42,9 @@ DEFAULT_PID_TARGET_TEMP = 75.0  # °C, typical safe chip temperature
 # Chip-temp safety cap only applies when an external temperature sensor is
 # driving the PID. Above the cap, the PID output is forced down to power_min.
 DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
+# Applied when PID Mode is turned off — avoids leaving the miner stuck at the
+# last wattage the PID commanded. Defaults to power_max (full tilt).
+DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
 
 # Units
 TERA_HASH_PER_SECOND = "TH/s"

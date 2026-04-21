@@ -20,7 +20,7 @@ Tested with firmware: `Whatsminer-all-20251209.16`
 ## Installation via HACS
 
 1. In Home Assistant, go to **HACS → Integrations → ⋮ → Custom repositories**
-2. Add `https://github.com/tronsington/ha-integration-whatsminer` with category **Integration**
+2. Add `https://github.com/EthnTuttle/ha-integration-whatsminer` with category **Integration**
 3. Search for **Whatsminer** in HACS and install
 4. Restart Home Assistant
 5. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**

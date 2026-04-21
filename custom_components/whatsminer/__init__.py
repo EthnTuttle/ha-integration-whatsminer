@@ -14,6 +14,8 @@ from .const import (
     CONF_PID_KD,
     CONF_PID_KI,
     CONF_PID_KP,
+    CONF_PID_MIN_ADJUST_INTERVAL,
+    CONF_PID_MIN_POWER_STEP,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
@@ -23,6 +25,8 @@ from .const import (
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
+    DEFAULT_PID_MIN_ADJUST_INTERVAL,
+    DEFAULT_PID_MIN_POWER_STEP,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_PORT,
     DEFAULT_POWER_MAX,
@@ -88,6 +92,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
             CONF_DEFAULT_POWER_LIMIT: _opt(
                 CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
+            ),
+            CONF_PID_MIN_POWER_STEP: _opt(
+                CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
+            ),
+            CONF_PID_MIN_ADJUST_INTERVAL: _opt(
+                CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
             ),
         },
         "pid_state": {

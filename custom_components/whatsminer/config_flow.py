@@ -24,6 +24,8 @@ from .const import (
     CONF_PID_KD,
     CONF_PID_KI,
     CONF_PID_KP,
+    CONF_PID_MIN_ADJUST_INTERVAL,
+    CONF_PID_MIN_POWER_STEP,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
@@ -33,6 +35,8 @@ from .const import (
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
+    DEFAULT_PID_MIN_ADJUST_INTERVAL,
+    DEFAULT_PID_MIN_POWER_STEP,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_PORT,
     DEFAULT_POWER_MAX,
@@ -210,6 +214,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
+                    vol.Optional(
+                        CONF_PID_MIN_POWER_STEP,
+                        default=current_data.get(
+                            CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=2500)),
+                    vol.Optional(
+                        CONF_PID_MIN_ADJUST_INTERVAL,
+                        default=current_data.get(
+                            CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
                 }
             ),
         )

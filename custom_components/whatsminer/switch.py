@@ -23,6 +23,8 @@ from .const import (
     CONF_PID_KD,
     CONF_PID_KI,
     CONF_PID_KP,
+    CONF_PID_MIN_ADJUST_INTERVAL,
+    CONF_PID_MIN_POWER_STEP,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
@@ -31,6 +33,8 @@ from .const import (
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
+    DEFAULT_PID_MIN_ADJUST_INTERVAL,
+    DEFAULT_PID_MIN_POWER_STEP,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
@@ -43,11 +47,6 @@ _LOGGER = logging.getLogger(__name__)
 
 # Grace period to wait for miner to change state before trusting reported state
 OPTIMISTIC_STATE_TIMEOUT = timedelta(minutes=3)
-
-# Only actuate when the PID output moves at least this many watts from the
-# current miner setting — avoids sending an encrypted TCP command on every
-# 30s poll for sub-watt wiggles.
-_MIN_POWER_STEP_W = 25
 
 
 async def async_setup_entry(
@@ -78,6 +77,12 @@ async def async_setup_entry(
             ),
             default_power_limit=config.get(
                 CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
+            ),
+            min_power_step=config.get(
+                CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
+            ),
+            min_adjust_interval=config.get(
+                CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
             ),
         ),
     ]
@@ -212,6 +217,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         external_sensor_id: str | None,
         chip_temp_safety_cap: float,
         default_power_limit: int,
+        min_power_step: int,
+        min_adjust_interval: int,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -224,9 +231,14 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._external_sensor_id = external_sensor_id
         self._chip_temp_safety_cap = chip_temp_safety_cap
         self._default_power_limit = default_power_limit
+        self._min_power_step = min_power_step
+        self._min_adjust_interval = min_adjust_interval
         self._external_unavail_logged = False
         self._last_input_time: float | None = None
         self._last_commanded_power: int | None = None
+        # Monotonic timestamp of the last adjust_power_limit call. 0 means
+        # "never commanded in this process" — first PID tick may fire immediately.
+        self._last_command_time: float = 0.0
         self._pid = PID(
             kp=kp,
             ki=ki,
@@ -282,6 +294,9 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._pid.clear_samples()
         self._pid.integral = 0.0
         self._last_input_time = None
+        # Clear so the first PID tick after enable isn't blocked by a throttle
+        # timer carried over from a prior PID-on session.
+        self._last_command_time = 0.0
         self._pid_state["enabled"] = True
         self.async_write_ha_state()
         _LOGGER.info("PID Mode enabled on %s", self.coordinator.miner_ip)
@@ -448,28 +463,54 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             }
         )
 
-        # Only push if the change is meaningful. Compare against both what the
-        # miner reports and what we last commanded — avoids stale reads causing
-        # repeat commands while a prior set_power_limit is still propagating.
+        # Decide whether to actuate. Each adjust_power_limit call restarts
+        # mining, so we gate on both magnitude (don't fire for sub-step wiggles)
+        # and time (don't fire more often than the configured interval).
+        # Safety cap bypasses the time throttle — overheat can't wait.
         reference = (
             self._last_commanded_power
             if self._last_commanded_power is not None
             else current_limit
         )
-        if abs(new_power - reference) < _MIN_POWER_STEP_W:
+        delta = abs(new_power - reference)
+        elapsed = time() - self._last_command_time
+        step_ok = delta >= self._min_power_step
+        interval_ok = elapsed >= self._min_adjust_interval
+
+        if safety_engaged and step_ok:
+            fire_reason = "SAFETY CAP"
+        elif step_ok and interval_ok:
+            fire_reason = "normal"
+        else:
+            _LOGGER.debug(
+                "PID actuation throttled: Δ=%dW (need %dW), elapsed=%.0fs (need %ds)",
+                delta,
+                self._min_power_step,
+                elapsed,
+                self._min_adjust_interval,
+            )
+            # Keep pid_state["output"] reflecting the *last actuated* value so
+            # Chart C's gap between requested_output and output visualizes the
+            # throttle. Fix that up — we overwrote it unconditionally above.
+            self._pid_state["output"] = (
+                self._last_commanded_power
+                if self._last_commanded_power is not None
+                else None
+            )
             return
 
         _LOGGER.info(
-            "PID: temp=%.1f°C target=%.1f°C → power %dW (was %dW, err=%.2f%s)",
+            "PID: temp=%.1f°C target=%.1f°C → power %dW (was %dW, err=%.2f, %s)",
             temp,
             target,
             new_power,
             reference,
             self._pid.error,
-            ", SAFETY CAP" if safety_engaged else "",
+            fire_reason,
         )
         try:
             await self.coordinator.api.set_power_limit(new_power)
             self._last_commanded_power = new_power
+            self._last_command_time = time()
         except Exception as err:
             _LOGGER.error("Failed to set power limit to %dW: %s", new_power, err)

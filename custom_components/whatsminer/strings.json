@@ -49,7 +49,9 @@
           "pid_kd": "PID Kd (derivative)",
           "external_temp_sensor": "External Temperature Sensor (optional)",
           "chip_temp_safety_cap": "Chip Temperature Safety Cap (°C)",
-          "default_power_limit": "Default Power Limit (W, applied when PID Mode turns off)"
+          "default_power_limit": "Default Power Limit (W, applied when PID Mode turns off)",
+          "pid_min_power_step": "PID Minimum Power Step (W, suppress commands smaller than this)",
+          "pid_min_adjust_interval": "PID Minimum Adjust Interval (seconds between power commands)"
         }
       }
     }

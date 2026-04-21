@@ -26,6 +26,8 @@ CONF_PID_TARGET_TEMP = "pid_target_temp"
 CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
 CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
 CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
+CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
+CONF_PID_MIN_ADJUST_INTERVAL = "pid_min_adjust_interval"
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -33,6 +35,11 @@ DEFAULT_PASSWORD = "admin"
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 DEFAULT_POWER_MIN = 1000  # watts
 DEFAULT_POWER_MAX = 5000  # watts
+# Each adjust_power_limit call restarts mining. Only actuate when the PID
+# output moves at least this many watts from the last commanded value, and
+# not more often than this interval. Defaults err on the conservative side.
+DEFAULT_PID_MIN_POWER_STEP = 250  # watts
+DEFAULT_PID_MIN_ADJUST_INTERVAL = 600  # seconds (10 min)
 # PID tuning — conservative starting point for a ~3kW miner tracking chip temp.
 # Kp is in W/°C: 200 means a 1°C overshoot trims 200W. Tune in the options flow.
 DEFAULT_PID_KP = 200.0

@@ -42,6 +42,8 @@ Tested with firmware: `Whatsminer-all-20251209.16`
 | Scan Interval | `30` s | Poll frequency (10–300 s) |
 | Power Min | `1000` W | Lower bound for power limit slider |
 | Power Max | `5000` W | Upper bound for power limit slider |
+| PID Min Power Step | `250` W | Suppress PID commands smaller than this (reduces mining restarts) |
+| PID Min Adjust Interval | `600` s | Minimum seconds between `adjust_power_limit` calls (safety cap bypasses) |
 
 ## Requirements
 
@@ -137,3 +139,11 @@ Defaults (Kp=200, Ki=5, Kd=100, target=75°C) are a conservative starting point.
 5. **Add small Kd** (start at 50–100) to reduce overshoot. If Chart B shows noisy D, your scan interval is probably too short — raise it in options.
 
 Give each change at least 10–15 minutes to settle before judging — miner thermal response is slow.
+
+### Actuation throttle (why the Power Limit chart looks "stepped")
+
+Every `adjust_power_limit` call restarts the miner's mining process. To protect the miner from thrashing, the PID only actually sends a command when **both**: the new value differs from the last commanded value by at least **PID Min Power Step** (default 250 W), **and** at least **PID Min Adjust Interval** seconds (default 600) have passed since the last command. Between those moments the PID math keeps running and `sensor.<miner>_pid_requested_output` keeps updating — only the actuator write is suppressed. Watch `sensor.<miner>_pid_output` (last actuated value) vs `sensor.<miner>_pid_requested_output` (what the PID wants) on Chart C to see the throttle working.
+
+The chip-temp safety cap bypasses the time throttle — overheat commands go out immediately.
+
+Tighten both values for faster response on a responsive thermal target; loosen them for a large thermal mass (boiler loop, storage tank) where fast commands are wasted work. Set `PID Min Adjust Interval` to `0` to disable the time throttle and revert to magnitude-only.

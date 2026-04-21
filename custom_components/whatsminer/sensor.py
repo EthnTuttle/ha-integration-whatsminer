@@ -20,6 +20,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -132,6 +133,72 @@ FAN_SENSOR_TYPES: dict[str, SensorEntityDescription] = {
     ),
 }
 
+# PID diagnostic sensors — read from the shared pid_state dict populated by
+# the climate entity. Split into "target" (always reports, used for tracking
+# chart) and "internals" (gapped when PID is disabled, so history-graph shows
+# a clean break rather than a misleading flatline).
+PID_TARGET_SENSOR_KEY = "target"
+PID_TARGET_SENSOR = SensorEntityDescription(
+    key="pid_target_temp",
+    name="PID Target Temperature",
+    native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+    device_class=SensorDeviceClass.TEMPERATURE,
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    icon="mdi:thermometer-lines",
+)
+PID_INTERNAL_SENSORS: dict[str, SensorEntityDescription] = {
+    "error": SensorEntityDescription(
+        key="pid_error",
+        name="PID Error",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:delta",
+    ),
+    "proportional": SensorEntityDescription(
+        key="pid_proportional",
+        name="PID Proportional",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "integral": SensorEntityDescription(
+        key="pid_integral",
+        name="PID Integral",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "derivative": SensorEntityDescription(
+        key="pid_derivative",
+        name="PID Derivative",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "output": SensorEntityDescription(
+        key="pid_output",
+        name="PID Output",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "requested_output": SensorEntityDescription(
+        key="pid_requested_output",
+        name="PID Requested Output",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -141,6 +208,7 @@ async def async_setup_entry(
     """Set up Whatsminer sensors from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator: WhatsminerCoordinator = data["coordinator"]
+    pid_state: dict = data["pid_state"]
 
     entities = []
 
@@ -178,6 +246,27 @@ async def async_setup_entry(
                     fan_index=idx,
                 )
             )
+
+    # PID diagnostic sensors — target always reports; internals gap when off.
+    entities.append(
+        WhatsminerPIDSensor(
+            coordinator=coordinator,
+            description=PID_TARGET_SENSOR,
+            pid_state=pid_state,
+            state_key=PID_TARGET_SENSOR_KEY,
+            always_report=True,
+        )
+    )
+    for state_key, description in PID_INTERNAL_SENSORS.items():
+        entities.append(
+            WhatsminerPIDSensor(
+                coordinator=coordinator,
+                description=description,
+                pid_state=pid_state,
+                state_key=state_key,
+                always_report=False,
+            )
+        )
 
     async_add_entities(entities)
 
@@ -333,3 +422,55 @@ class WhatsminerFanSensor(CoordinatorEntity, SensorEntity):
             and self.coordinator.last_update_success
             and self._fan_index < len(self.coordinator.data.get("fans", []))
         )
+
+
+class WhatsminerPIDSensor(CoordinatorEntity, SensorEntity):
+    """Diagnostic sensor reading from the shared PID state dict."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: WhatsminerCoordinator,
+        description: SensorEntityDescription,
+        pid_state: dict,
+        state_key: str,
+        always_report: bool,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._pid_state = pid_state
+        self._state_key = state_key
+        # always_report=True keeps target visible even when PID is disabled, so
+        # the tracking chart's setpoint line survives OFF/COOL toggles.
+        self._always_report = always_report
+        self._attr_unique_id = f"{coordinator.data['mac']}_{description.key}"
+        self._attr_name = description.name
+
+    @property
+    def device_info(self) -> entity.DeviceInfo:
+        """Return device info."""
+        return entity.DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.data["mac"])},
+            name=self.coordinator.name,
+            manufacturer=self.coordinator.data.get("make", "Whatsminer"),
+            model=self.coordinator.data.get("model", "Unknown"),
+            sw_version=self.coordinator.data.get("fw_ver"),
+            configuration_url=f"http://{self.coordinator.data['ip']}",
+        )
+
+    @property
+    def native_value(self):
+        """Return the latest PID state value, or None to produce a chart gap."""
+        if not self._always_report and not self._pid_state.get("enabled"):
+            return None
+        value = self._pid_state.get(self._state_key)
+        if isinstance(value, float):
+            return round(value, 2)
+        return value
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self.coordinator.available and self.coordinator.last_update_success

@@ -42,7 +42,13 @@
           "password": "Password",
           "scan_interval": "Scan Interval (seconds)",
           "power_min": "Minimum Power Limit (watts)",
-          "power_max": "Maximum Power Limit (watts)"
+          "power_max": "Maximum Power Limit (watts)",
+          "pid_target_temp": "PID Target Temperature (°C)",
+          "pid_kp": "PID Kp (proportional, W/°C)",
+          "pid_ki": "PID Ki (integral)",
+          "pid_kd": "PID Kd (derivative)",
+          "external_temp_sensor": "External Temperature Sensor (optional)",
+          "chip_temp_safety_cap": "Chip Temperature Safety Cap (°C)"
         }
       }
     }

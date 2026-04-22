@@ -227,6 +227,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._pid_state = pid_state
         self._power_min = power_min
         self._power_max = power_max
+        self._kp = kp  # kept for bumpless-transfer seed in async_turn_on
         self._default_target = default_target
         self._external_sensor_id = external_sensor_id
         self._chip_temp_safety_cap = chip_temp_safety_cap
@@ -288,18 +289,38 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         return self.coordinator.available and self.coordinator.last_update_success
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Enable PID Mode."""
+        """Enable PID Mode with bumpless transfer from the current power limit."""
         if self._pid_state.get("enabled"):
             return
         self._pid.clear_samples()
-        self._pid.integral = 0.0
         self._last_input_time = None
         # Clear so the first PID tick after enable isn't blocked by a throttle
         # timer carried over from a prior PID-on session.
         self._last_command_time = 0.0
+
+        # Bumpless transfer: seed the integral so the first PID calc produces
+        # ~the miner's current wattage limit. Without this, output = Kp*error
+        # on tick 1, which can slam the miner down to power_min when the system
+        # is already happily mining at a useful wattage.
+        current_limit = self.coordinator.data.get("wattage_limit") or 0
+        if current_limit <= 0:
+            current_limit = self._default_power_limit
+        current_temp = self._current_temperature()
+        target = self._pid_state.get("target") or self._default_target
+        if current_temp is not None:
+            first_tick_p = self._kp * (float(target) - float(current_temp))
+        else:
+            first_tick_p = 0.0
+        self._pid.integral = float(current_limit) - first_tick_p
+        self._last_commanded_power = int(current_limit)
+
         self._pid_state["enabled"] = True
         self.async_write_ha_state()
-        _LOGGER.info("PID Mode enabled on %s", self.coordinator.miner_ip)
+        _LOGGER.info(
+            "PID Mode enabled on %s — seeded integral so first output ≈ %dW",
+            self.coordinator.miner_ip,
+            int(current_limit),
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable PID Mode and revert the miner to the default power limit."""

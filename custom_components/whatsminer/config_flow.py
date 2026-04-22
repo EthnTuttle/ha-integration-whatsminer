@@ -132,15 +132,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Create the options flow."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for Whatsminer."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
+    # HA wires self.config_entry automatically via the OptionsFlow base class
+    # (it's a read-only property in 2024.12+), so we don't override __init__.
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

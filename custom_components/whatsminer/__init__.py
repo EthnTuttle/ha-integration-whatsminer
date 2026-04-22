@@ -8,7 +8,6 @@ from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT, 
 from homeassistant.core import HomeAssistant
 
 from .const import (
-    CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_KD,
@@ -19,7 +18,6 @@ from .const import (
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
-    DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PASSWORD,
     DEFAULT_PID_KD,
@@ -74,6 +72,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _opt(key: str, default):
         return entry.options.get(key, entry.data.get(key, default))
 
+    if not _opt(CONF_EXTERNAL_TEMP_SENSOR, None):
+        _LOGGER.warning(
+            "PID Mode requires an external temperature sensor — open the "
+            "integration's Configure dialog and pick one before enabling PID Mode"
+        )
+
     # Store coordinator and config for platforms to use. pid_state is a mutable
     # dict shared between the PID Mode switch (writer) and the diagnostic PID
     # sensors (readers) so both platforms see the same numbers on each tick.
@@ -87,9 +91,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_PID_KD: _opt(CONF_PID_KD, DEFAULT_PID_KD),
             CONF_PID_TARGET_TEMP: _opt(CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP),
             CONF_EXTERNAL_TEMP_SENSOR: _opt(CONF_EXTERNAL_TEMP_SENSOR, None),
-            CONF_CHIP_TEMP_SAFETY_CAP: _opt(
-                CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
-            ),
             CONF_DEFAULT_POWER_LIMIT: _opt(
                 CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
             ),
@@ -108,7 +109,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "output": None,             # actuated (what we commanded)
             "requested_output": None,   # pre-clamp PID desire
             "target": None,
-            "safety_engaged": False,
             "enabled": False,
         },
     }

@@ -24,7 +24,6 @@ CONF_PID_KI = "pid_ki"
 CONF_PID_KD = "pid_kd"
 CONF_PID_TARGET_TEMP = "pid_target_temp"
 CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
-CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
 CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
 CONF_PID_MIN_ADJUST_INTERVAL = "pid_min_adjust_interval"
@@ -40,15 +39,12 @@ DEFAULT_POWER_MAX = 5000  # watts
 # not more often than this interval. Defaults err on the conservative side.
 DEFAULT_PID_MIN_POWER_STEP = 250  # watts
 DEFAULT_PID_MIN_ADJUST_INTERVAL = 600  # seconds (10 min)
-# PID tuning — conservative starting point for a ~3kW miner tracking chip temp.
+# PID tuning — conservative starting point for a ~3kW miner.
 # Kp is in W/°C: 200 means a 1°C overshoot trims 200W. Tune in the options flow.
 DEFAULT_PID_KP = 200.0
 DEFAULT_PID_KI = 5.0
 DEFAULT_PID_KD = 100.0
-DEFAULT_PID_TARGET_TEMP = 75.0  # °C, typical safe chip temperature
-# Chip-temp safety cap only applies when an external temperature sensor is
-# driving the PID. Above the cap, the PID output is forced down to power_min.
-DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
+DEFAULT_PID_TARGET_TEMP = 75.0  # °C, a reasonable external-target starting point
 # Applied when PID Mode is turned off — avoids leaving the miner stuck at the
 # last wattage the PID commanded. Defaults to power_max (full tilt).
 DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX

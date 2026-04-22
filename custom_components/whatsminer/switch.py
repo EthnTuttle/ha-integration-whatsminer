@@ -10,6 +10,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -17,7 +18,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
-    CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_KD,
@@ -28,7 +28,6 @@ from .const import (
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
-    DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
@@ -72,9 +71,6 @@ async def async_setup_entry(
             kd=config.get(CONF_PID_KD, DEFAULT_PID_KD),
             default_target=config.get(CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP),
             external_sensor_id=config.get(CONF_EXTERNAL_TEMP_SENSOR) or None,
-            chip_temp_safety_cap=config.get(
-                CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
-            ),
             default_power_limit=config.get(
                 CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
             ),
@@ -215,7 +211,6 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         kd: float,
         default_target: float,
         external_sensor_id: str | None,
-        chip_temp_safety_cap: float,
         default_power_limit: int,
         min_power_step: int,
         min_adjust_interval: int,
@@ -230,7 +225,6 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._kp = kp  # kept for bumpless-transfer seed in async_turn_on
         self._default_target = default_target
         self._external_sensor_id = external_sensor_id
-        self._chip_temp_safety_cap = chip_temp_safety_cap
         self._default_power_limit = default_power_limit
         self._min_power_step = min_power_step
         self._min_adjust_interval = min_adjust_interval
@@ -260,6 +254,13 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         if last_state is None:
             return
         if last_state.state == STATE_ON:
+            if self._external_sensor_id is None:
+                _LOGGER.warning(
+                    "PID Mode was ON before restart but no external temperature "
+                    "sensor is configured — leaving PID off. Open the integration's "
+                    "Configure dialog to pick a sensor, then re-enable PID Mode."
+                )
+                return
             # Clear PID samples so we don't carry stale derivative across a
             # restart (could be hours later).
             self._pid.clear_samples()
@@ -292,6 +293,12 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         """Enable PID Mode with bumpless transfer from the current power limit."""
         if self._pid_state.get("enabled"):
             return
+        if self._external_sensor_id is None:
+            raise HomeAssistantError(
+                "PID Mode requires an external temperature sensor. "
+                "Open the integration's Configure dialog and set External "
+                "Temperature Sensor, then retry."
+            )
         self._pid.clear_samples()
         self._last_input_time = None
         # Clear so the first PID tick after enable isn't blocked by a throttle
@@ -336,7 +343,6 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "derivative": None,
                 "output": None,
                 "requested_output": None,
-                "safety_engaged": False,
                 "enabled": False,
             }
         )
@@ -367,11 +373,6 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         if self._pid_state.get("enabled"):
             self.hass.async_create_task(self._run_pid_step())
         super()._handle_coordinator_update()
-
-    def _chip_temp(self) -> float | None:
-        """Return the miner's own chip/board temperature in °C."""
-        temp = self.coordinator.data.get("temperature_avg")
-        return float(temp) if temp and temp > 0 else None
 
     def _read_external_sensor_celsius(self) -> float | None:
         """Read the user-selected temperature sensor, converting to °C if needed."""
@@ -411,10 +412,15 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         return value
 
     def _current_temperature(self) -> float | None:
-        """Return the regulated variable: external sensor if set, else chip temp."""
-        if self._external_sensor_id:
-            return self._read_external_sensor_celsius()
-        return self._chip_temp()
+        """Return the regulated variable read from the external sensor.
+
+        The miner's own chip temperature is deliberately not used — it's noisy
+        and the miner firmware already manages its own thermal envelope. Returns
+        None if no external sensor is configured or the sensor is unavailable.
+        """
+        if self._external_sensor_id is None:
+            return None
+        return self._read_external_sensor_celsius()
 
     async def _run_pid_step(self) -> None:
         """Compute PID output and push to the miner if it changed meaningfully."""
@@ -446,27 +452,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         if not did_calc:
             return
 
-        requested_power = int(round(output))
+        new_power = int(round(output))
         current_limit = self.coordinator.data.get("wattage_limit") or 0
-
-        # Safety cap: when an external sensor drives the PID, the regulated
-        # variable isn't the miner's own chip temp anymore, so we need an
-        # independent override that slams power down if the chip overheats.
-        # Only applies when external_sensor_id is configured — chip-targeted PID
-        # already self-regulates.
-        safety_engaged = False
-        new_power = requested_power
-        if self._external_sensor_id:
-            chip = self._chip_temp()
-            if chip is not None and chip > self._chip_temp_safety_cap:
-                new_power = self._power_min
-                safety_engaged = True
-                _LOGGER.warning(
-                    "Chip temp %.1f°C exceeds safety cap %.1f°C — clamping power to %dW",
-                    chip,
-                    self._chip_temp_safety_cap,
-                    new_power,
-                )
 
         # Publish PID internals on every successful calc (even when we don't
         # actuate) so the diagnostic sensors / charts stay live while the loop
@@ -478,8 +465,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "integral": self._pid.integral,
                 "derivative": self._pid.derivative,
                 "output": new_power,
-                "requested_output": requested_power,
-                "safety_engaged": safety_engaged,
+                "requested_output": new_power,
                 "enabled": True,
             }
         )
@@ -487,7 +473,6 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # Decide whether to actuate. Each adjust_power_limit call restarts
         # mining, so we gate on both magnitude (don't fire for sub-step wiggles)
         # and time (don't fire more often than the configured interval).
-        # Safety cap bypasses the time throttle — overheat can't wait.
         reference = (
             self._last_commanded_power
             if self._last_commanded_power is not None
@@ -498,11 +483,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         step_ok = delta >= self._min_power_step
         interval_ok = elapsed >= self._min_adjust_interval
 
-        if safety_engaged and step_ok:
-            fire_reason = "SAFETY CAP"
-        elif step_ok and interval_ok:
-            fire_reason = "normal"
-        else:
+        if not (step_ok and interval_ok):
             _LOGGER.debug(
                 "PID actuation throttled: Δ=%dW (need %dW), elapsed=%.0fs (need %ds)",
                 delta,
@@ -521,13 +502,12 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return
 
         _LOGGER.info(
-            "PID: temp=%.1f°C target=%.1f°C → power %dW (was %dW, err=%.2f, %s)",
+            "PID: temp=%.1f°C target=%.1f°C → power %dW (was %dW, err=%.2f)",
             temp,
             target,
             new_power,
             reference,
             self._pid.error,
-            fire_reason,
         )
         try:
             await self.coordinator.api.set_power_limit(new_power)

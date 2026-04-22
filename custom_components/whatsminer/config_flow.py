@@ -18,7 +18,6 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
-    CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_KD,
@@ -29,7 +28,6 @@ from .const import (
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
-    DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PASSWORD,
     DEFAULT_PID_KD,
@@ -189,7 +187,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_PID_KD,
                         default=current_data.get(CONF_PID_KD, DEFAULT_PID_KD),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=5000)),
-                    vol.Optional(
+                    vol.Required(
                         CONF_EXTERNAL_TEMP_SENSOR,
                         description={
                             "suggested_value": current_data.get(
@@ -201,12 +199,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             domain="sensor", device_class="temperature"
                         )
                     ),
-                    vol.Optional(
-                        CONF_CHIP_TEMP_SAFETY_CAP,
-                        default=current_data.get(
-                            CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
-                        ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=60, max=100)),
                     vol.Optional(
                         CONF_DEFAULT_POWER_LIMIT,
                         default=current_data.get(

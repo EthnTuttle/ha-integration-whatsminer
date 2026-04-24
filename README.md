@@ -13,8 +13,10 @@ Tested with firmware: `Whatsminer-all-20251209.16`
 - **Switches**: Mining Control (start/stop mining); **PID Mode** (enable/disable temperature-targeted power modulation)
 - **Numbers**: Power Limit (slider, blocked while PID Mode is on); **PID Target Temperature** (setpoint, dashboard-adjustable)
 - **Temperature targeting**: PID Mode drives the miner's power limit from a **required** external Home Assistant temperature sensor (e.g. a boiler loop, a storage tank) — the miner's own chip temp is deliberately not used in the control loop (noisy, and the miner firmware already self-manages thermals)
+- **Chip-temp safety cap**: configurable hard veto on PID output — if the chip-temp average crosses the cap (default 85°C), the PID is overridden to the minimum power limit and a `PID Safety Engaged` binary sensor flips to `problem`. Belt-and-suspenders over the firmware's own thermal protection so overheat events are visible in HA, not silently absorbed
 - **PID-off fallback**: when PID Mode is turned off, the miner reverts to a configurable **Default Power Limit** (defaults to the configured maximum) instead of getting stuck at whatever wattage the PID last commanded
 - **PID diagnostic sensors**: Target, Error, Proportional, Integral, Derivative, Output, Requested Output — for charting and tuning
+- **Auto-recovery from mining shutoffs**: on any mining on↔off transition (miner auto-shutoff, firmware thermal cutback, network drop, manual off), the PID clears its integrator and throttle clock so the next resumption starts fresh with a bumpless-transfer re-seed instead of firing stale state
 
 ## Installation via HACS
 
@@ -42,6 +44,7 @@ Tested with firmware: `Whatsminer-all-20251209.16`
 | Power Min | `1000` W | Lower bound for power limit slider |
 | Power Max | `5000` W | Upper bound for power limit slider |
 | External Temperature Sensor | — | **Required for PID Mode.** Any HA `sensor` with `device_class: temperature` |
+| Chip Temp Safety Cap | `85` °C | If chip-temp average crosses this, PID output is overridden to `Power Min` and `binary_sensor.<miner>_pid_safety_engaged` flips on |
 | PID Min Power Step | `250` W | Suppress PID commands smaller than this (reduces mining restarts) |
 | PID Min Adjust Interval | `600` s | Minimum seconds between `adjust_power_limit` calls |
 
@@ -126,6 +129,8 @@ PID Mode regulates power off an external HA temperature sensor — the miner's o
 
 PID Mode refuses to enable if no external sensor is set. If the sensor becomes unavailable while PID is running, the loop pauses (no new `adjust_power_limit` commands) until the sensor returns — it won't fall back to the miner's internal reading.
 
+Even though the PID *inputs* only the external sensor, the chip temp retains a hard veto on the *output*: if `temperature_avg` crosses the **Chip Temperature Safety Cap** (default 85°C), the PID is forced to `Power Min` on the next tick and `binary_sensor.<miner>_pid_safety_engaged` flips on. This is a deliberate belt-and-suspenders over the miner's firmware-level thermal protection — the firmware will throttle and protect itself regardless, but without the cap those events are invisible to HA automations and dashboards.
+
 Expect **Kp to need serious retuning** for a slow thermal mass: a boiler loop has ~100× the thermal inertia of a chip, so the default Kp=200 will be far too aggressive. Try Kp=20–50 with Ki and Kd starting at zero.
 
 ### Tuning recipe
@@ -143,5 +148,9 @@ Give each change at least 10–15 minutes to settle before judging — miner the
 ### Actuation throttle (why the Power Limit chart looks "stepped")
 
 Every `adjust_power_limit` call restarts the miner's mining process. To protect the miner from thrashing, the PID only actually sends a command when **both**: the new value differs from the last commanded value by at least **PID Min Power Step** (default 250 W), **and** at least **PID Min Adjust Interval** seconds (default 600) have passed since the last command. Between those moments the PID math keeps running and `sensor.<miner>_pid_requested_output` keeps updating — only the actuator write is suppressed. Watch `sensor.<miner>_pid_output` (last actuated value) vs `sensor.<miner>_pid_requested_output` (what the PID wants) on Chart C to see the throttle working.
+
+The chip-temp safety cap bypasses the time throttle — overheat commands go out on the next tick, not 10 minutes later. Sub-step wiggles are still suppressed.
+
+If the miner auto-shuts-off mid-run (firmware thermal cutback, network drop, manual off, etc.), the PID now resets its integrator, samples, and throttle clock on the off→on transition and re-seeds bumpless transfer from the current wattage instead of resuming with hours of stale state.
 
 Tighten both values for faster response on a responsive thermal target; loosen them for a large thermal mass (boiler loop, storage tank) where fast commands are wasted work. Set `PID Min Adjust Interval` to `0` to disable the time throttle and revert to magnitude-only.

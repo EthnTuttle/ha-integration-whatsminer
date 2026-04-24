@@ -27,6 +27,7 @@ CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
 CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
 CONF_PID_MIN_ADJUST_INTERVAL = "pid_min_adjust_interval"
+CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -48,6 +49,11 @@ DEFAULT_PID_TARGET_TEMP = 75.0  # °C, a reasonable external-target starting poi
 # Applied when PID Mode is turned off — avoids leaving the miner stuck at the
 # last wattage the PID commanded. Defaults to power_max (full tilt).
 DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
+# Belt-and-suspenders over the miner's own firmware thermal protection: if the
+# chip-temp average crosses this threshold, the PID is overridden to power_min
+# regardless of what the external-sensor loop wants. Chip temp is NOT a PID
+# input (noisy, already firmware-managed) — it's purely a veto on output.
+DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
 
 # Units
 TERA_HASH_PER_SECOND = "TH/s"

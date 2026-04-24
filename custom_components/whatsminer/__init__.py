@@ -8,6 +8,7 @@ from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT, 
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_KD,
@@ -18,6 +19,7 @@ from .const import (
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
+    DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PASSWORD,
     DEFAULT_PID_KD,
@@ -100,6 +102,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_PID_MIN_ADJUST_INTERVAL: _opt(
                 CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
             ),
+            CONF_CHIP_TEMP_SAFETY_CAP: _opt(
+                CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
+            ),
         },
         "pid_state": {
             "error": None,
@@ -110,6 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "requested_output": None,   # pre-clamp PID desire
             "target": None,
             "enabled": False,
+            "safety_engaged": False,
         },
     }
 

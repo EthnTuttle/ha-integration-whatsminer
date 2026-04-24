@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
+    CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_KD,
@@ -28,6 +29,7 @@ from .const import (
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
+    DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
@@ -79,6 +81,9 @@ async def async_setup_entry(
             ),
             min_adjust_interval=config.get(
                 CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
+            ),
+            chip_temp_safety_cap=config.get(
+                CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
             ),
         ),
     ]
@@ -214,6 +219,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         default_power_limit: int,
         min_power_step: int,
         min_adjust_interval: int,
+        chip_temp_safety_cap: float,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -228,9 +234,13 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._default_power_limit = default_power_limit
         self._min_power_step = min_power_step
         self._min_adjust_interval = min_adjust_interval
+        self._chip_temp_safety_cap = chip_temp_safety_cap
         self._external_unavail_logged = False
         self._last_input_time: float | None = None
         self._last_commanded_power: int | None = None
+        # Tracks mining on↔off transitions detected in _handle_coordinator_update
+        # so we can reset controller state when the miner auto-stops.
+        self._last_is_mining: bool | None = None
         # Monotonic timestamp of the last adjust_power_limit call. 0 means
         # "never commanded in this process" — first PID tick may fire immediately.
         self._last_command_time: float = 0.0
@@ -289,6 +299,29 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         """Return if entity is available."""
         return self.coordinator.available and self.coordinator.last_update_success
 
+    def _seed_bumpless_transfer(self) -> int:
+        """Seed the PID integral so the first tick output ≈ current miner wattage.
+
+        Without this, output = Kp*error on tick 1, which can slam the miner down
+        to power_min when the system is already happily mining at a useful
+        wattage. Used both when PID Mode is toggled on and when the miner comes
+        back from an auto-shutoff while PID was already enabled.
+
+        Returns the current_limit value used for seeding (for logging).
+        """
+        current_limit = self.coordinator.data.get("wattage_limit") or 0
+        if current_limit <= 0:
+            current_limit = self._default_power_limit
+        current_temp = self._current_temperature()
+        target = self._pid_state.get("target") or self._default_target
+        if current_temp is not None:
+            first_tick_p = self._kp * (float(target) - float(current_temp))
+        else:
+            first_tick_p = 0.0
+        self._pid.integral = float(current_limit) - first_tick_p
+        self._last_commanded_power = int(current_limit)
+        return int(current_limit)
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable PID Mode with bumpless transfer from the current power limit."""
         if self._pid_state.get("enabled"):
@@ -305,28 +338,14 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # timer carried over from a prior PID-on session.
         self._last_command_time = 0.0
 
-        # Bumpless transfer: seed the integral so the first PID calc produces
-        # ~the miner's current wattage limit. Without this, output = Kp*error
-        # on tick 1, which can slam the miner down to power_min when the system
-        # is already happily mining at a useful wattage.
-        current_limit = self.coordinator.data.get("wattage_limit") or 0
-        if current_limit <= 0:
-            current_limit = self._default_power_limit
-        current_temp = self._current_temperature()
-        target = self._pid_state.get("target") or self._default_target
-        if current_temp is not None:
-            first_tick_p = self._kp * (float(target) - float(current_temp))
-        else:
-            first_tick_p = 0.0
-        self._pid.integral = float(current_limit) - first_tick_p
-        self._last_commanded_power = int(current_limit)
+        seeded_limit = self._seed_bumpless_transfer()
 
         self._pid_state["enabled"] = True
         self.async_write_ha_state()
         _LOGGER.info(
             "PID Mode enabled on %s — seeded integral so first output ≈ %dW",
             self.coordinator.miner_ip,
-            int(current_limit),
+            seeded_limit,
         )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
@@ -369,10 +388,51 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Run a PID step on each coordinator poll when enabled."""
+        """Detect mining transitions then run a PID step when enabled."""
+        is_mining = bool(self.coordinator.data.get("is_mining"))
+        if self._last_is_mining is not None and is_mining != self._last_is_mining:
+            if not is_mining:
+                # Miner just stopped (auto-shutoff, firmware thermal cutback,
+                # manual, network drop, etc.). Clear controller state so we
+                # don't resume later with hours of stale integral and a dead
+                # throttle clock — that produced a 30°C probe overshoot in
+                # capture data.
+                self._pid.clear_samples()
+                self._pid.integral = 0.0
+                self._last_input_time = None
+                self._last_commanded_power = None
+                self._last_command_time = 0.0
+                _LOGGER.info("Mining stopped — PID controller state reset")
+            elif self._pid_state.get("enabled"):
+                # Miner came back while PID was on — re-seed bumpless so the
+                # first tick matches the miner's current wattage.
+                seeded = self._seed_bumpless_transfer()
+                _LOGGER.info(
+                    "Mining resumed — re-seeded PID for bumpless transfer (≈%dW)",
+                    seeded,
+                )
+        self._last_is_mining = is_mining
+
         if self._pid_state.get("enabled"):
             self.hass.async_create_task(self._run_pid_step())
         super()._handle_coordinator_update()
+
+    def _chip_temp(self) -> float | None:
+        """Return the miner's chip-temp average, or None when not reported.
+
+        Used only for the safety cap veto — the PID loop does NOT feed on chip
+        temp. Firmware already manages thermals; this is an HA-visible
+        belt-and-suspenders so a stuck/drifting external sensor can't cook the
+        miner silently.
+        """
+        temp = self.coordinator.data.get("temperature_avg")
+        try:
+            value = float(temp)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        return value
 
     def _read_external_sensor_celsius(self) -> float | None:
         """Read the user-selected temperature sensor, converting to °C if needed."""
@@ -452,12 +512,30 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         if not did_calc:
             return
 
-        new_power = int(round(output))
+        requested_power = int(round(output))
+        new_power = requested_power
         current_limit = self.coordinator.data.get("wattage_limit") or 0
+
+        # Safety cap veto: chip-temp is NOT a PID input, but it retains a hard
+        # override on output. If the chip crosses the configured cap, force the
+        # actuator to power_min regardless of what the external-sensor loop
+        # wants. Firmware will also self-protect, but HA shouldn't be blind.
+        safety_engaged = False
+        chip = self._chip_temp()
+        if chip is not None and chip >= self._chip_temp_safety_cap:
+            new_power = self._power_min
+            safety_engaged = True
+            _LOGGER.warning(
+                "Chip temp %.1f°C ≥ cap %.1f°C — forcing %dW (PID override)",
+                chip,
+                self._chip_temp_safety_cap,
+                new_power,
+            )
 
         # Publish PID internals on every successful calc (even when we don't
         # actuate) so the diagnostic sensors / charts stay live while the loop
-        # idles at target.
+        # idles at target. requested_output stays at the raw PID desire;
+        # output reflects the safety clamp so Chart C shows the veto.
         self._pid_state.update(
             {
                 "error": self._pid.error,
@@ -465,14 +543,17 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "integral": self._pid.integral,
                 "derivative": self._pid.derivative,
                 "output": new_power,
-                "requested_output": new_power,
+                "requested_output": requested_power,
                 "enabled": True,
+                "safety_engaged": safety_engaged,
             }
         )
 
         # Decide whether to actuate. Each adjust_power_limit call restarts
         # mining, so we gate on both magnitude (don't fire for sub-step wiggles)
-        # and time (don't fire more often than the configured interval).
+        # and time (don't fire more often than the configured interval). The
+        # safety-cap path bypasses the interval — overheat commands must go
+        # out on the next tick, not 10 minutes later.
         reference = (
             self._last_commanded_power
             if self._last_commanded_power is not None
@@ -482,8 +563,9 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         elapsed = time() - self._last_command_time
         step_ok = delta >= self._min_power_step
         interval_ok = elapsed >= self._min_adjust_interval
+        safety_fire = safety_engaged and step_ok
 
-        if not (step_ok and interval_ok):
+        if not safety_fire and not (step_ok and interval_ok):
             _LOGGER.debug(
                 "PID actuation throttled: Δ=%dW (need %dW), elapsed=%.0fs (need %ds)",
                 delta,

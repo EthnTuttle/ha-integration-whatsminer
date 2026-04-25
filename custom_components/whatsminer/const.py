@@ -56,9 +56,11 @@ DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
 # regardless of what the external-sensor loop wants. Chip temp is NOT a PID
 # input (noisy, already firmware-managed) — it's purely a veto on output.
 DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
-# Integral only accumulates while |SP − PV| ≤ this band (°C). Outside the band,
-# P+D drive the output; this prevents the integrator from winding up during a
-# long cold-start ramp. 0 disables the band (classic PI behavior).
+# Integral is only frozen when |SP − PV| > this band AND the output has hit a
+# saturation rail (out_min/out_max). Outside the band but with actuator
+# headroom, integration continues — that's the disturbance-recovery case where
+# the integrator is supposed to push. Inside the band, integration always runs
+# normally. 0 disables the conditional freeze entirely.
 DEFAULT_PID_INTEGRAL_BAND = 3.0
 # Max rate (°C/min) at which the effective setpoint moves toward the user's
 # target. 0 disables ramping (the PID sees the full step immediately). A

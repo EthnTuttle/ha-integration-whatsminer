@@ -539,15 +539,15 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             self._ramped_target = user_target
             target = user_target
 
-        # Integral band: outside the band, accumulate P+D only. Snapshot the
-        # integral before calc() and restore it after, so calc() can run its
-        # normal logic (which anti-windup depends on) without actually changing
-        # the integrator state. Inside the band, let it run normally.
+        # Integral band: only freeze accumulation when we're far from SP AND
+        # the output has hit a saturation rail. Far-from-SP-with-headroom is
+        # the disturbance-recovery case where the integrator must push — an
+        # earlier "always freeze when far from SP" version stalled recovery
+        # with PV 12°C below target and the integrator drained to ~0.
         error_abs = abs(target - float(temp))
-        integral_frozen = (
-            self._integral_band > 0 and error_abs > self._integral_band
-        )
-        integral_snapshot = self._pid.integral if integral_frozen else None
+        # Snapshot before calc() so we can rewind without copying calc()'s
+        # internal logic. Cheap; only restored when we decide to freeze.
+        integral_snapshot = self._pid.integral
 
         try:
             output, did_calc = self._pid.calc(
@@ -560,7 +560,17 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             _LOGGER.exception("PID calculation failed: %s", err)
             return
 
-        if integral_frozen and integral_snapshot is not None:
+        sat_tol = 1.0
+        output_saturated = (
+            output >= float(self._power_max) - sat_tol
+            or output <= float(self._power_min) + sat_tol
+        )
+        integral_frozen = (
+            self._integral_band > 0
+            and error_abs > self._integral_band
+            and output_saturated
+        )
+        if integral_frozen:
             # Rewind the integrator and recompute output without its accumulated
             # growth. Update _pid._output too so next tick's anti-windup guard
             # (which reads _last_output) sees the clamped value we actually used.

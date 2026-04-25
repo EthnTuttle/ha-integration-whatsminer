@@ -26,6 +26,10 @@ CONF_PID_TARGET_TEMP = "pid_target_temp"
 CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
 CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
+CONF_PID_MIN_POWER_STEP_MEDIUM = "pid_min_power_step_medium"
+CONF_PID_MIN_POWER_STEP_FINE = "pid_min_power_step_fine"
+CONF_PID_COARSE_STEP_BAND = "pid_coarse_step_band"
+CONF_PID_FINE_STEP_BAND = "pid_fine_step_band"
 CONF_PID_MIN_ADJUST_INTERVAL = "pid_min_adjust_interval"
 CONF_PID_MIN_ADJUST_INTERVAL_INCREASE = "pid_min_adjust_interval_increase"
 CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
@@ -41,7 +45,19 @@ DEFAULT_POWER_MAX = 5000  # watts
 # Each adjust_power_limit call restarts mining. Only actuate when the PID
 # output moves at least this many watts from the last commanded value, and
 # not more often than this interval. Defaults err on the conservative side.
-DEFAULT_PID_MIN_POWER_STEP = 250  # watts
+# Three-band step resolution. The closer we are to setpoint, the smaller the
+# minimum step we'll fire — coarse moves fast when far off, fine nudges
+# precisely near target. Thresholds compare |SP − PV| in °C.
+#   |err| > coarse_band            → coarse step (max swings to recover)
+#   fine_band < |err| ≤ coarse_band → medium step
+#   |err| ≤ fine_band              → fine step
+# Set fine_band = 0 to collapse to two bands; coarse_band = 0 + fine_band = 0
+# to disable banding entirely (always uses coarse step).
+DEFAULT_PID_MIN_POWER_STEP = 250  # watts (coarse — far from setpoint)
+DEFAULT_PID_MIN_POWER_STEP_MEDIUM = 100  # watts (mid)
+DEFAULT_PID_MIN_POWER_STEP_FINE = 25  # watts (fine — near setpoint)
+DEFAULT_PID_COARSE_STEP_BAND = 5.0  # °C — boundary between far and mid
+DEFAULT_PID_FINE_STEP_BAND = 2.0  # °C — boundary between mid and near
 # Throttle is asymmetric: hydronic loops drop fast when zones call for heat
 # (urgent — comfort impact), but mild overshoot when zones satisfy is harmless.
 # Power-up commands use the shorter "increase" interval; power-down commands

@@ -25,9 +25,13 @@ from .const import (
     CONF_PID_KD,
     CONF_PID_KI,
     CONF_PID_KP,
+    CONF_PID_COARSE_STEP_BAND,
+    CONF_PID_FINE_STEP_BAND,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
     CONF_PID_MIN_POWER_STEP,
+    CONF_PID_MIN_POWER_STEP_FINE,
+    CONF_PID_MIN_POWER_STEP_MEDIUM,
     CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
@@ -38,9 +42,13 @@ from .const import (
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
+    DEFAULT_PID_COARSE_STEP_BAND,
+    DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
     DEFAULT_PID_MIN_POWER_STEP,
+    DEFAULT_PID_MIN_POWER_STEP_FINE,
+    DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
     DEFAULT_PID_SETPOINT_RAMP_RATE,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_POWER_MAX,
@@ -84,6 +92,18 @@ async def async_setup_entry(
             ),
             min_power_step=config.get(
                 CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
+            ),
+            min_power_step_medium=config.get(
+                CONF_PID_MIN_POWER_STEP_MEDIUM, DEFAULT_PID_MIN_POWER_STEP_MEDIUM
+            ),
+            min_power_step_fine=config.get(
+                CONF_PID_MIN_POWER_STEP_FINE, DEFAULT_PID_MIN_POWER_STEP_FINE
+            ),
+            coarse_step_band=config.get(
+                CONF_PID_COARSE_STEP_BAND, DEFAULT_PID_COARSE_STEP_BAND
+            ),
+            fine_step_band=config.get(
+                CONF_PID_FINE_STEP_BAND, DEFAULT_PID_FINE_STEP_BAND
             ),
             min_adjust_interval=config.get(
                 CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
@@ -239,6 +259,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         integral_band: float = DEFAULT_PID_INTEGRAL_BAND,
         setpoint_ramp_rate: float = DEFAULT_PID_SETPOINT_RAMP_RATE,
         min_adjust_interval_increase: int = DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
+        min_power_step_medium: int = DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
+        min_power_step_fine: int = DEFAULT_PID_MIN_POWER_STEP_FINE,
+        coarse_step_band: float = DEFAULT_PID_COARSE_STEP_BAND,
+        fine_step_band: float = DEFAULT_PID_FINE_STEP_BAND,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -252,6 +276,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._external_sensor_id = external_sensor_id
         self._default_power_limit = default_power_limit
         self._min_power_step = min_power_step
+        self._min_power_step_medium = min_power_step_medium
+        self._min_power_step_fine = min_power_step_fine
+        self._coarse_step_band = float(coarse_step_band)
+        self._fine_step_band = float(fine_step_band)
         self._min_adjust_interval = min_adjust_interval
         self._min_adjust_interval_increase = min_adjust_interval_increase
         self._chip_temp_safety_cap = chip_temp_safety_cap
@@ -647,7 +675,19 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         )
         delta = abs(new_power - reference)
         elapsed = time() - self._last_command_time
-        step_ok = delta >= self._min_power_step
+        # Step size scales with proximity to setpoint: coarse far away,
+        # medium in the mid-band, fine near target. Lets the loop nudge
+        # precisely without firing for sub-step wiggles when way off.
+        if error_abs <= self._fine_step_band:
+            effective_min_step = self._min_power_step_fine
+            band_label = "fine"
+        elif error_abs <= self._coarse_step_band:
+            effective_min_step = self._min_power_step_medium
+            band_label = "medium"
+        else:
+            effective_min_step = self._min_power_step
+            band_label = "coarse"
+        step_ok = delta >= effective_min_step
         effective_interval = (
             self._min_adjust_interval_increase
             if new_power > reference
@@ -658,9 +698,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
 
         if not safety_fire and not (step_ok and interval_ok):
             _LOGGER.debug(
-                "PID actuation throttled: Δ=%dW (need %dW), elapsed=%.0fs (need %ds, %s)",
+                "PID actuation throttled: Δ=%dW (need %dW, %s band), elapsed=%.0fs (need %ds, %s)",
                 delta,
-                self._min_power_step,
+                effective_min_step,
+                band_label,
                 elapsed,
                 effective_interval,
                 "increase" if new_power > reference else "decrease",

@@ -25,9 +25,13 @@ from .const import (
     CONF_PID_KD,
     CONF_PID_KI,
     CONF_PID_KP,
+    CONF_PID_COARSE_STEP_BAND,
+    CONF_PID_FINE_STEP_BAND,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
     CONF_PID_MIN_POWER_STEP,
+    CONF_PID_MIN_POWER_STEP_FINE,
+    CONF_PID_MIN_POWER_STEP_MEDIUM,
     CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
@@ -39,9 +43,13 @@ from .const import (
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
+    DEFAULT_PID_COARSE_STEP_BAND,
+    DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
     DEFAULT_PID_MIN_POWER_STEP,
+    DEFAULT_PID_MIN_POWER_STEP_FINE,
+    DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
     DEFAULT_PID_SETPOINT_RAMP_RATE,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_PORT,
@@ -225,6 +233,32 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=2500)),
+                    vol.Optional(
+                        CONF_PID_MIN_POWER_STEP_MEDIUM,
+                        default=current_data.get(
+                            CONF_PID_MIN_POWER_STEP_MEDIUM,
+                            DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=2500)),
+                    vol.Optional(
+                        CONF_PID_MIN_POWER_STEP_FINE,
+                        default=current_data.get(
+                            CONF_PID_MIN_POWER_STEP_FINE,
+                            DEFAULT_PID_MIN_POWER_STEP_FINE,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=2500)),
+                    vol.Optional(
+                        CONF_PID_COARSE_STEP_BAND,
+                        default=current_data.get(
+                            CONF_PID_COARSE_STEP_BAND, DEFAULT_PID_COARSE_STEP_BAND
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=50)),
+                    vol.Optional(
+                        CONF_PID_FINE_STEP_BAND,
+                        default=current_data.get(
+                            CONF_PID_FINE_STEP_BAND, DEFAULT_PID_FINE_STEP_BAND
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=50)),
                     vol.Optional(
                         CONF_PID_MIN_ADJUST_INTERVAL,
                         default=current_data.get(

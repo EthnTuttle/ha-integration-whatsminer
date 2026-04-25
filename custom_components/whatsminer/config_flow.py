@@ -26,6 +26,7 @@ from .const import (
     CONF_PID_KI,
     CONF_PID_KP,
     CONF_PID_MIN_ADJUST_INTERVAL,
+    CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
     CONF_PID_MIN_POWER_STEP,
     CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_TARGET_TEMP,
@@ -39,6 +40,7 @@ from .const import (
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
+    DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
     DEFAULT_PID_MIN_POWER_STEP,
     DEFAULT_PID_SETPOINT_RAMP_RATE,
     DEFAULT_PID_TARGET_TEMP,
@@ -227,6 +229,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_PID_MIN_ADJUST_INTERVAL,
                         default=current_data.get(
                             CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+                    vol.Optional(
+                        CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
+                        default=current_data.get(
+                            CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
+                            DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
                     vol.Optional(

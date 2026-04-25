@@ -26,6 +26,7 @@ from .const import (
     CONF_PID_KI,
     CONF_PID_KP,
     CONF_PID_MIN_ADJUST_INTERVAL,
+    CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
     CONF_PID_MIN_POWER_STEP,
     CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_TARGET_TEMP,
@@ -38,6 +39,7 @@ from .const import (
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
+    DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
     DEFAULT_PID_MIN_POWER_STEP,
     DEFAULT_PID_SETPOINT_RAMP_RATE,
     DEFAULT_PID_TARGET_TEMP,
@@ -85,6 +87,10 @@ async def async_setup_entry(
             ),
             min_adjust_interval=config.get(
                 CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
+            ),
+            min_adjust_interval_increase=config.get(
+                CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
+                DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
             ),
             chip_temp_safety_cap=config.get(
                 CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
@@ -232,6 +238,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         chip_temp_safety_cap: float,
         integral_band: float = DEFAULT_PID_INTEGRAL_BAND,
         setpoint_ramp_rate: float = DEFAULT_PID_SETPOINT_RAMP_RATE,
+        min_adjust_interval_increase: int = DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -246,6 +253,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._default_power_limit = default_power_limit
         self._min_power_step = min_power_step
         self._min_adjust_interval = min_adjust_interval
+        self._min_adjust_interval_increase = min_adjust_interval_increase
         self._chip_temp_safety_cap = chip_temp_safety_cap
         self._integral_band = float(integral_band)
         self._setpoint_ramp_rate = float(setpoint_ramp_rate)
@@ -629,7 +637,9 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # mining, so we gate on both magnitude (don't fire for sub-step wiggles)
         # and time (don't fire more often than the configured interval). The
         # safety-cap path bypasses the interval — overheat commands must go
-        # out on the next tick, not 10 minutes later.
+        # out on the next tick, not the full interval later.
+        # Throttle is asymmetric: power-up commands (zones called for heat) use
+        # the shorter increase-interval; power-down commands use the longer one.
         reference = (
             self._last_commanded_power
             if self._last_commanded_power is not None
@@ -638,16 +648,22 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         delta = abs(new_power - reference)
         elapsed = time() - self._last_command_time
         step_ok = delta >= self._min_power_step
-        interval_ok = elapsed >= self._min_adjust_interval
+        effective_interval = (
+            self._min_adjust_interval_increase
+            if new_power > reference
+            else self._min_adjust_interval
+        )
+        interval_ok = elapsed >= effective_interval
         safety_fire = safety_engaged and step_ok
 
         if not safety_fire and not (step_ok and interval_ok):
             _LOGGER.debug(
-                "PID actuation throttled: Δ=%dW (need %dW), elapsed=%.0fs (need %ds)",
+                "PID actuation throttled: Δ=%dW (need %dW), elapsed=%.0fs (need %ds, %s)",
                 delta,
                 self._min_power_step,
                 elapsed,
-                self._min_adjust_interval,
+                effective_interval,
+                "increase" if new_power > reference else "decrease",
             )
             # Keep pid_state["output"] reflecting the *last actuated* value so
             # Chart C's gap between requested_output and output visualizes the

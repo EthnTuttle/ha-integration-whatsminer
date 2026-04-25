@@ -27,6 +27,7 @@ CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
 CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
 CONF_PID_MIN_ADJUST_INTERVAL = "pid_min_adjust_interval"
+CONF_PID_MIN_ADJUST_INTERVAL_INCREASE = "pid_min_adjust_interval_increase"
 CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
 CONF_PID_INTEGRAL_BAND = "pid_integral_band"
 CONF_PID_SETPOINT_RAMP_RATE = "pid_setpoint_ramp_rate"
@@ -41,7 +42,12 @@ DEFAULT_POWER_MAX = 5000  # watts
 # output moves at least this many watts from the last commanded value, and
 # not more often than this interval. Defaults err on the conservative side.
 DEFAULT_PID_MIN_POWER_STEP = 250  # watts
-DEFAULT_PID_MIN_ADJUST_INTERVAL = 600  # seconds (10 min)
+# Throttle is asymmetric: hydronic loops drop fast when zones call for heat
+# (urgent — comfort impact), but mild overshoot when zones satisfy is harmless.
+# Power-up commands use the shorter "increase" interval; power-down commands
+# use the longer interval below to avoid thrashing the miner.
+DEFAULT_PID_MIN_ADJUST_INTERVAL = 600  # seconds (10 min) — power-down floor
+DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE = 300  # seconds (5 min) — power-up floor
 # PID tuning — conservative starting point for a ~3kW miner.
 # Kp is in W/°C: 200 means a 1°C overshoot trims 200W. Tune in the options flow.
 DEFAULT_PID_KP = 200.0

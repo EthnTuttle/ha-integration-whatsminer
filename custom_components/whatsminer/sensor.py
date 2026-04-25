@@ -149,10 +149,12 @@ PID_TARGET_SENSOR = SensorEntityDescription(
 )
 PID_INTERNAL_SENSORS: dict[str, SensorEntityDescription] = {
     "error": SensorEntityDescription(
+        # Stores a temperature *delta* (setpoint − PV). Declaring it as
+        # TEMPERATURE makes HA apply the absolute F = 9/5·C + 32 conversion
+        # and add a bogus +32°F offset in Fahrenheit displays.
         key="pid_error",
         name="PID Error",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement="Δ°C",
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:delta",

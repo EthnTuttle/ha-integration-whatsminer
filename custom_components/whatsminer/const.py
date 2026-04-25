@@ -28,6 +28,8 @@ CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
 CONF_PID_MIN_ADJUST_INTERVAL = "pid_min_adjust_interval"
 CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
+CONF_PID_INTEGRAL_BAND = "pid_integral_band"
+CONF_PID_SETPOINT_RAMP_RATE = "pid_setpoint_ramp_rate"
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -54,6 +56,15 @@ DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
 # regardless of what the external-sensor loop wants. Chip temp is NOT a PID
 # input (noisy, already firmware-managed) — it's purely a veto on output.
 DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
+# Integral only accumulates while |SP − PV| ≤ this band (°C). Outside the band,
+# P+D drive the output; this prevents the integrator from winding up during a
+# long cold-start ramp. 0 disables the band (classic PI behavior).
+DEFAULT_PID_INTEGRAL_BAND = 3.0
+# Max rate (°C/min) at which the effective setpoint moves toward the user's
+# target. 0 disables ramping (the PID sees the full step immediately). A
+# non-zero value turns a large SP change into a smooth ramp, which keeps the
+# integrator well-behaved on slow plants.
+DEFAULT_PID_SETPOINT_RAMP_RATE = 0.0
 
 # Units
 TERA_HASH_PER_SECOND = "TH/s"

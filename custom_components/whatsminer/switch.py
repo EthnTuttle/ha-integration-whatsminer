@@ -21,21 +21,25 @@ from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
+    CONF_PID_INTEGRAL_BAND,
     CONF_PID_KD,
     CONF_PID_KI,
     CONF_PID_KP,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_POWER_STEP,
+    CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_DEFAULT_POWER_LIMIT,
+    DEFAULT_PID_INTEGRAL_BAND,
     DEFAULT_PID_KD,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_POWER_STEP,
+    DEFAULT_PID_SETPOINT_RAMP_RATE,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
@@ -84,6 +88,12 @@ async def async_setup_entry(
             ),
             chip_temp_safety_cap=config.get(
                 CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
+            ),
+            integral_band=config.get(
+                CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
+            ),
+            setpoint_ramp_rate=config.get(
+                CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
             ),
         ),
     ]
@@ -220,6 +230,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         min_power_step: int,
         min_adjust_interval: int,
         chip_temp_safety_cap: float,
+        integral_band: float = DEFAULT_PID_INTEGRAL_BAND,
+        setpoint_ramp_rate: float = DEFAULT_PID_SETPOINT_RAMP_RATE,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -235,6 +247,11 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._min_power_step = min_power_step
         self._min_adjust_interval = min_adjust_interval
         self._chip_temp_safety_cap = chip_temp_safety_cap
+        self._integral_band = float(integral_band)
+        self._setpoint_ramp_rate = float(setpoint_ramp_rate)
+        # Effective (possibly ramped) setpoint the PID actually sees. None until
+        # the first tick seeds it from the current PV.
+        self._ramped_target: float | None = None
         self._external_unavail_logged = False
         self._last_input_time: float | None = None
         self._last_commanded_power: int | None = None
@@ -337,6 +354,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # Clear so the first PID tick after enable isn't blocked by a throttle
         # timer carried over from a prior PID-on session.
         self._last_command_time = 0.0
+        # Let the ramp re-seed from current PV on the first tick.
+        self._ramped_target = None
 
         seeded_limit = self._seed_bumpless_transfer()
 
@@ -402,6 +421,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 self._last_input_time = None
                 self._last_commanded_power = None
                 self._last_command_time = 0.0
+                self._ramped_target = None
                 _LOGGER.info("Mining stopped — PID controller state reset")
             elif self._pid_state.get("enabled"):
                 # Miner came back while PID was on — re-seed bumpless so the
@@ -491,12 +511,44 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         if not self.coordinator.data.get("is_mining"):
             return
 
-        target = self._pid_state.get("target")
-        if target is None:
-            target = self._default_target
+        user_target = self._pid_state.get("target")
+        if user_target is None:
+            user_target = self._default_target
+        user_target = float(user_target)
 
         now = time()
         last = self._last_input_time or now
+
+        # Setpoint ramp: when enabled, move the effective setpoint toward the
+        # user target at ≤ ramp_rate °C/min. Seeded from current PV on first
+        # tick so a cold plant never sees a huge step error.
+        if self._setpoint_ramp_rate > 0:
+            if self._ramped_target is None:
+                self._ramped_target = float(temp)
+            dt_min = max(0.0, (now - last) / 60.0)
+            max_move = self._setpoint_ramp_rate * dt_min
+            delta = user_target - self._ramped_target
+            if abs(delta) <= max_move:
+                self._ramped_target = user_target
+            else:
+                self._ramped_target += max_move if delta > 0 else -max_move
+            target = self._ramped_target
+        else:
+            # No ramping — hand the raw user setpoint to the PID. Keep
+            # _ramped_target in sync so re-enabling ramp later starts cleanly.
+            self._ramped_target = user_target
+            target = user_target
+
+        # Integral band: outside the band, accumulate P+D only. Snapshot the
+        # integral before calc() and restore it after, so calc() can run its
+        # normal logic (which anti-windup depends on) without actually changing
+        # the integrator state. Inside the band, let it run normally.
+        error_abs = abs(target - float(temp))
+        integral_frozen = (
+            self._integral_band > 0 and error_abs > self._integral_band
+        )
+        integral_snapshot = self._pid.integral if integral_frozen else None
+
         try:
             output, did_calc = self._pid.calc(
                 input_val=float(temp),
@@ -507,6 +559,20 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         except Exception as err:  # defensive — don't break coordinator loop
             _LOGGER.exception("PID calculation failed: %s", err)
             return
+
+        if integral_frozen and integral_snapshot is not None:
+            # Rewind the integrator and recompute output without its accumulated
+            # growth. Update _pid._output too so next tick's anti-windup guard
+            # (which reads _last_output) sees the clamped value we actually used.
+            self._pid.integral = integral_snapshot
+            output = (
+                self._pid.proportional
+                + integral_snapshot
+                + self._pid.derivative
+                + self._pid.external
+            )
+            output = max(min(output, float(self._power_max)), float(self._power_min))
+            self._pid._output = output
 
         self._last_input_time = now
         if not did_calc:

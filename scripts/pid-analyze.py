@@ -236,6 +236,51 @@ def analyze(path: str) -> dict[str, Any]:
     safety = string_points(hist.get(f"binary_sensor.{slug}_pid_safety_engaged", []))
     mining = string_points(hist.get(f"binary_sensor.{slug}_mining_status", []))
 
+    # Demand entities: capture script appends configured climate entities to
+    # history, plus a top-level "demand_entities" list. Compute the fraction
+    # of the window where at least one was reporting hvac_action == "heating".
+    demand_ids: list[str] = list(data.get("demand_entities") or [])
+    demand_in_window_pct: float | None = None
+    if demand_ids and pv:
+        window_start, window_end = pv[0][0], pv[-1][0]
+        # Build a per-entity timeline of hvac_action ("heating" vs other)
+        per_ent_timelines = []
+        for eid in demand_ids:
+            series = hist.get(eid, [])
+            timeline = []
+            for entry in series:
+                t = entry.get("last_changed") or entry.get("last_updated")
+                if not t:
+                    continue
+                try:
+                    ts = dt.datetime.fromisoformat(t)
+                except ValueError:
+                    continue
+                attrs = entry.get("attributes") or {}
+                action = attrs.get("hvac_action") or entry.get("state")
+                timeline.append((ts, str(action) if action is not None else ""))
+            per_ent_timelines.append(timeline)
+
+        # Sample at 60s grid; cheap enough for 12h windows
+        grid_step = 60.0
+        total_secs = (window_end - window_start).total_seconds()
+        n_steps = max(1, int(total_secs / grid_step))
+        any_heating_steps = 0
+        for i in range(n_steps):
+            t = window_start + dt.timedelta(seconds=i * grid_step)
+            for tl in per_ent_timelines:
+                # Last state at-or-before t
+                last = None
+                for ts, val in tl:
+                    if ts <= t:
+                        last = val
+                    else:
+                        break
+                if last == "heating":
+                    any_heating_steps += 1
+                    break
+        demand_in_window_pct = 100.0 * any_heating_steps / n_steps
+
     report: dict[str, Any] = {
         "path": path,
         "slug": slug,
@@ -372,6 +417,8 @@ def analyze(path: str) -> dict[str, Any]:
     # Safety + mining
     report["safety_engaged_events"] = sum(1 for _, s in safety if s == "on")
     report["mining_off_events"] = sum(1 for _, s in mining if s == "off")
+    report["demand_entities"] = demand_ids
+    report["demand_in_window_pct"] = demand_in_window_pct
     if power_cons:
         report["power_consumption_mean_w"] = S.mean([v for _, v in power_cons])
 
@@ -429,6 +476,10 @@ def print_report(r: dict[str, Any]) -> None:
     if "power_consumption_mean_w" in r:
         print(f"Mean power consumption: {r['power_consumption_mean_w']:.0f}W")
     print(f"Safety-engaged events: {r['safety_engaged_events']}   mining-off events: {r['mining_off_events']}")
+    if r.get("demand_entities"):
+        pct = r.get("demand_in_window_pct")
+        pct_s = f"{pct:.1f}%" if pct is not None else "—"
+        print(f"Demand entities ({pct_s} of window in active heating): {', '.join(r['demand_entities'])}")
 
 
 def compare(a: dict[str, Any], b: dict[str, Any]) -> None:

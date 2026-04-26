@@ -32,6 +32,8 @@ from .const import (
     CONF_PID_MIN_POWER_STEP,
     CONF_PID_MIN_POWER_STEP_FINE,
     CONF_PID_MIN_POWER_STEP_MEDIUM,
+    CONF_PID_SUPPLY_TEMP_LOCKOUT,
+    CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
@@ -50,6 +52,8 @@ from .const import (
     DEFAULT_PID_MIN_POWER_STEP,
     DEFAULT_PID_MIN_POWER_STEP_FINE,
     DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
+    DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
+    DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
     DEFAULT_PID_SETPOINT_RAMP_RATE,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_PORT,
@@ -227,6 +231,20 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=60, max=100)),
+                    vol.Optional(
+                        CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
+                        default=current_data.get(
+                            CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
+                            DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=30, max=80)),
+                    vol.Optional(
+                        CONF_PID_SUPPLY_TEMP_LOCKOUT,
+                        default=current_data.get(
+                            CONF_PID_SUPPLY_TEMP_LOCKOUT,
+                            DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=30, max=90)),
                     vol.Optional(
                         CONF_PID_MIN_POWER_STEP,
                         default=current_data.get(

@@ -33,6 +33,8 @@ from .const import (
     CONF_PID_MIN_POWER_STEP_FINE,
     CONF_PID_MIN_POWER_STEP_MEDIUM,
     CONF_PID_SETPOINT_RAMP_RATE,
+    CONF_PID_SUPPLY_TEMP_LOCKOUT,
+    CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
@@ -50,6 +52,8 @@ from .const import (
     DEFAULT_PID_MIN_POWER_STEP_FINE,
     DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
     DEFAULT_PID_SETPOINT_RAMP_RATE,
+    DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
+    DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
     DEFAULT_PID_TARGET_TEMP,
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
@@ -114,6 +118,12 @@ async def async_setup_entry(
             ),
             chip_temp_safety_cap=config.get(
                 CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
+            ),
+            supply_temp_safety_cap=config.get(
+                CONF_PID_SUPPLY_TEMP_SAFETY_CAP, DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP
+            ),
+            supply_temp_lockout=config.get(
+                CONF_PID_SUPPLY_TEMP_LOCKOUT, DEFAULT_PID_SUPPLY_TEMP_LOCKOUT
             ),
             integral_band=config.get(
                 CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
@@ -263,6 +273,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         min_power_step_fine: int = DEFAULT_PID_MIN_POWER_STEP_FINE,
         coarse_step_band: float = DEFAULT_PID_COARSE_STEP_BAND,
         fine_step_band: float = DEFAULT_PID_FINE_STEP_BAND,
+        supply_temp_safety_cap: float = DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
+        supply_temp_lockout: float = DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -283,6 +295,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._min_adjust_interval = min_adjust_interval
         self._min_adjust_interval_increase = min_adjust_interval_increase
         self._chip_temp_safety_cap = chip_temp_safety_cap
+        self._supply_temp_safety_cap = float(supply_temp_safety_cap)
+        self._supply_temp_lockout = float(supply_temp_lockout)
         self._integral_band = float(integral_band)
         self._setpoint_ramp_rate = float(setpoint_ramp_rate)
         # Effective (possibly ramped) setpoint the PID actually sees. None until
@@ -628,11 +642,14 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         new_power = requested_power
         current_limit = self.coordinator.data.get("wattage_limit") or 0
 
-        # Safety cap veto: chip-temp is NOT a PID input, but it retains a hard
-        # override on output. If the chip crosses the configured cap, force the
-        # actuator to power_min regardless of what the external-sensor loop
-        # wants. Firmware will also self-protect, but HA shouldn't be blind.
+        # Safety cap veto: chip-temp guards the *miner*; supply-temp caps guard
+        # the *plant* (boiler heat exchanger sees a stagnant loop and can trip
+        # its own high-limit even at miner power_min). All three force
+        # power_min and engage the safety binary sensor; the supply lockout
+        # additionally calls power_off() to latch mining off until the
+        # operator reviews and toggles Mining Control back on.
         safety_engaged = False
+        supply_lockout = False
         chip = self._chip_temp()
         if chip is not None and chip >= self._chip_temp_safety_cap:
             new_power = self._power_min
@@ -641,6 +658,24 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "Chip temp %.1f°C ≥ cap %.1f°C — forcing %dW (PID override)",
                 chip,
                 self._chip_temp_safety_cap,
+                new_power,
+            )
+        if temp >= self._supply_temp_lockout:
+            new_power = self._power_min
+            safety_engaged = True
+            supply_lockout = True
+            _LOGGER.critical(
+                "Supply temp %.1f°C ≥ lockout %.1f°C — stopping mining (latched)",
+                temp,
+                self._supply_temp_lockout,
+            )
+        elif temp >= self._supply_temp_safety_cap:
+            new_power = self._power_min
+            safety_engaged = True
+            _LOGGER.warning(
+                "Supply temp %.1f°C ≥ cap %.1f°C — forcing %dW (PID override)",
+                temp,
+                self._supply_temp_safety_cap,
                 new_power,
             )
 
@@ -660,6 +695,19 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "safety_engaged": safety_engaged,
             }
         )
+
+        # Hard lockout: stop mining outright, then return without trying to
+        # set a power limit (the miner is going off — adjusting limits would
+        # race the power-off command). User must toggle Mining Control back
+        # on to recover; bumpless transfer at re-enable will re-seed the PID.
+        if supply_lockout:
+            try:
+                await self.coordinator.api.power_off()
+                self._last_commanded_power = None
+                self._last_command_time = time()
+            except Exception as err:
+                _LOGGER.error("Failed to stop mining on supply-temp lockout: %s", err)
+            return
 
         # Decide whether to actuate. Each adjust_power_limit call restarts
         # mining, so we gate on both magnitude (don't fire for sub-step wiggles)

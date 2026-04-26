@@ -26,6 +26,7 @@ from .const import (
     CONF_PID_KI,
     CONF_PID_KP,
     CONF_PID_COARSE_STEP_BAND,
+    CONF_PID_DEMAND_ENTITIES,
     CONF_PID_FINE_STEP_BAND,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
@@ -45,6 +46,7 @@ from .const import (
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
     DEFAULT_PID_COARSE_STEP_BAND,
+    DEFAULT_PID_DEMAND_ENTITIES,
     DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
@@ -124,6 +126,9 @@ async def async_setup_entry(
             ),
             supply_temp_lockout=config.get(
                 CONF_PID_SUPPLY_TEMP_LOCKOUT, DEFAULT_PID_SUPPLY_TEMP_LOCKOUT
+            ),
+            demand_entities=config.get(
+                CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
             ),
             integral_band=config.get(
                 CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
@@ -275,6 +280,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         fine_step_band: float = DEFAULT_PID_FINE_STEP_BAND,
         supply_temp_safety_cap: float = DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
         supply_temp_lockout: float = DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
+        demand_entities: list[str] | None = None,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -297,6 +303,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._chip_temp_safety_cap = chip_temp_safety_cap
         self._supply_temp_safety_cap = float(supply_temp_safety_cap)
         self._supply_temp_lockout = float(supply_temp_lockout)
+        self._demand_entities: list[str] = list(demand_entities or [])
+        self._no_demand_logged = False
         self._integral_band = float(integral_band)
         self._setpoint_ramp_rate = float(setpoint_ramp_rate)
         # Effective (possibly ramped) setpoint the PID actually sees. None until
@@ -552,6 +560,37 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return None
         return self._read_external_sensor_celsius()
 
+    def _has_demand(self) -> bool | None:
+        """Return whether any configured demand entity is calling for heat.
+
+        Used as a flow-proxy: if no thermostat is calling, the loop pump is
+        likely idle and the boiler heat exchanger is stagnant — we should not
+        keep dumping power into it. Returns:
+          None  — feature disabled (no demand entities configured).
+          True  — at least one entity reports hvac_action == "heating".
+          False — entities are configured but none report active heating
+                  (or all are unavailable; fail safe = treat as no demand).
+        """
+        if not self._demand_entities:
+            return None
+        any_known = False
+        for eid in self._demand_entities:
+            state = self.hass.states.get(eid)
+            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                continue
+            action = state.attributes.get("hvac_action")
+            if action in (None, "unavailable"):
+                continue
+            any_known = True
+            if action == "heating":
+                return True
+        if not any_known:
+            _LOGGER.warning(
+                "All demand entities (%s) are unavailable — failing safe to no-demand",
+                ", ".join(self._demand_entities),
+            )
+        return False
+
     async def _run_pid_step(self) -> None:
         """Compute PID output and push to the miner if it changed meaningfully."""
         temp = self._current_temperature()
@@ -678,6 +717,25 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 self._supply_temp_safety_cap,
                 new_power,
             )
+
+        # Demand lockout: if no configured thermostat is calling for heat,
+        # the loop pump is likely idle and we have no flow to dissipate
+        # power into. Force power_min and engage safety; auto-resumes the
+        # next time any demand entity returns to "heating".
+        demand = self._has_demand()
+        if demand is False:
+            new_power = self._power_min
+            safety_engaged = True
+            if not self._no_demand_logged:
+                _LOGGER.warning(
+                    "No demand from %s — forcing %dW (PID override) until a thermostat calls",
+                    ", ".join(self._demand_entities),
+                    new_power,
+                )
+                self._no_demand_logged = True
+        elif demand is True and self._no_demand_logged:
+            _LOGGER.info("Demand returned — releasing no-demand lockout")
+            self._no_demand_logged = False
 
         # Publish PID internals on every successful calc (even when we don't
         # actuate) so the diagnostic sensors / charts stay live while the loop

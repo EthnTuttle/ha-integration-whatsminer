@@ -26,6 +26,7 @@ from .const import (
     CONF_PID_KI,
     CONF_PID_KP,
     CONF_PID_COARSE_STEP_BAND,
+    CONF_PID_DEMAND_ENTITIES,
     CONF_PID_FINE_STEP_BAND,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
@@ -46,6 +47,7 @@ from .const import (
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
     DEFAULT_PID_COARSE_STEP_BAND,
+    DEFAULT_PID_DEMAND_ENTITIES,
     DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
@@ -245,6 +247,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=30, max=90)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_ENTITIES,
+                        default=current_data.get(
+                            CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
+                        ),
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="climate", multiple=True)
+                    ),
                     vol.Optional(
                         CONF_PID_MIN_POWER_STEP,
                         default=current_data.get(

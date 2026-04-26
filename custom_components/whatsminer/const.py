@@ -35,6 +35,7 @@ CONF_PID_MIN_ADJUST_INTERVAL_INCREASE = "pid_min_adjust_interval_increase"
 CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
 CONF_PID_SUPPLY_TEMP_SAFETY_CAP = "pid_supply_temp_safety_cap"
 CONF_PID_SUPPLY_TEMP_LOCKOUT = "pid_supply_temp_lockout"
+CONF_PID_DEMAND_ENTITIES = "pid_demand_entities"
 CONF_PID_INTEGRAL_BAND = "pid_integral_band"
 CONF_PID_SETPOINT_RAMP_RATE = "pid_setpoint_ramp_rate"
 
@@ -89,6 +90,11 @@ DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
 #            cap couldn't hold and the operator should review.
 DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP = 50.0  # °C (122 °F)
 DEFAULT_PID_SUPPLY_TEMP_LOCKOUT = 60.0  # °C (140 °F)
+# Demand-driven lockout: when these climate entities are all idle (none with
+# hvac_action == "heating"), force power_min and engage the safety binary
+# sensor. Empty list disables the feature entirely. Recoverable: the loop
+# auto-resumes when any entity transitions back to "heating".
+DEFAULT_PID_DEMAND_ENTITIES: list[str] = []
 # Integral is only frozen when |SP − PV| > this band AND the output has hit a
 # saturation rail (out_min/out_max). Outside the band but with actuator
 # headroom, integration continues — that's the disturbance-recovery case where

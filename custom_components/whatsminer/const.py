@@ -56,8 +56,8 @@ DEFAULT_POWER_MAX = 5000  # watts
 # Set fine_band = 0 to collapse to two bands; coarse_band = 0 + fine_band = 0
 # to disable banding entirely (always uses coarse step).
 DEFAULT_PID_MIN_POWER_STEP = 250  # watts (coarse — far from setpoint)
-DEFAULT_PID_MIN_POWER_STEP_MEDIUM = 100  # watts (mid)
-DEFAULT_PID_MIN_POWER_STEP_FINE = 25  # watts (fine — near setpoint)
+DEFAULT_PID_MIN_POWER_STEP_MEDIUM = 150  # watts (mid)
+DEFAULT_PID_MIN_POWER_STEP_FINE = 50  # watts (fine — near setpoint)
 DEFAULT_PID_COARSE_STEP_BAND = 5.0  # °C — boundary between far and mid
 DEFAULT_PID_FINE_STEP_BAND = 2.0  # °C — boundary between mid and near
 # Throttle is asymmetric: hydronic loops drop fast when zones call for heat

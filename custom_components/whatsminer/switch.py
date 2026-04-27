@@ -512,8 +512,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return None
         return value
 
-    def _read_external_sensor_celsius(self) -> float | None:
-        """Read the user-selected temperature sensor, converting to °C if needed."""
+    def _read_external_sensor_fahrenheit(self) -> float | None:
+        """Read the user-selected temperature sensor, converting to °F if needed."""
         state = self.hass.states.get(self._external_sensor_id)
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
             if not self._external_unavail_logged:
@@ -534,14 +534,14 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return None
         self._external_unavail_logged = False
         unit = state.attributes.get("unit_of_measurement")
-        if unit and unit != UnitOfTemperature.CELSIUS:
+        if unit and unit != UnitOfTemperature.FAHRENHEIT:
             try:
                 value = TemperatureConverter.convert(
-                    value, unit, UnitOfTemperature.CELSIUS
+                    value, unit, UnitOfTemperature.FAHRENHEIT
                 )
             except Exception as err:
                 _LOGGER.warning(
-                    "Could not convert %s from %s to °C: %s",
+                    "Could not convert %s from %s to °F: %s",
                     self._external_sensor_id,
                     unit,
                     err,
@@ -558,7 +558,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         """
         if self._external_sensor_id is None:
             return None
-        return self._read_external_sensor_celsius()
+        return self._read_external_sensor_fahrenheit()
 
     def _has_demand(self) -> bool | None:
         """Return whether any configured demand entity is calling for heat.
@@ -609,7 +609,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         last = self._last_input_time or now
 
         # Setpoint ramp: when enabled, move the effective setpoint toward the
-        # user target at ≤ ramp_rate °C/min. Seeded from current PV on first
+        # user target at ≤ ramp_rate °F/min. Seeded from current PV on first
         # tick so a cold plant never sees a huge step error.
         if self._setpoint_ramp_rate > 0:
             if self._ramped_target is None:
@@ -632,7 +632,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # the output has hit a saturation rail. Far-from-SP-with-headroom is
         # the disturbance-recovery case where the integrator must push — an
         # earlier "always freeze when far from SP" version stalled recovery
-        # with PV 12°C below target and the integrator drained to ~0.
+        # with PV well below target and the integrator drained to ~0.
         error_abs = abs(target - float(temp))
         # Snapshot before calc() so we can rewind without copying calc()'s
         # internal logic. Cheap; only restored when we decide to freeze.
@@ -694,7 +694,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             new_power = self._power_min
             safety_engaged = True
             _LOGGER.warning(
-                "Chip temp %.1f°C ≥ cap %.1f°C — forcing %dW (PID override)",
+                "Chip temp %.1f°F ≥ cap %.1f°F — forcing %dW (PID override)",
                 chip,
                 self._chip_temp_safety_cap,
                 new_power,
@@ -704,7 +704,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             safety_engaged = True
             supply_lockout = True
             _LOGGER.critical(
-                "Supply temp %.1f°C ≥ lockout %.1f°C — stopping mining (latched)",
+                "Supply temp %.1f°F ≥ lockout %.1f°F — stopping mining (latched)",
                 temp,
                 self._supply_temp_lockout,
             )
@@ -712,7 +712,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             new_power = self._power_min
             safety_engaged = True
             _LOGGER.warning(
-                "Supply temp %.1f°C ≥ cap %.1f°C — forcing %dW (PID override)",
+                "Supply temp %.1f°F ≥ cap %.1f°F — forcing %dW (PID override)",
                 temp,
                 self._supply_temp_safety_cap,
                 new_power,
@@ -823,7 +823,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return
 
         _LOGGER.info(
-            "PID: temp=%.1f°C target=%.1f°C → power %dW (was %dW, err=%.2f)",
+            "PID: temp=%.1f°F target=%.1f°F → power %dW (was %dW, err=%.2f)",
             temp,
             target,
             new_power,

@@ -9,9 +9,12 @@ Reads a capture produced by scripts/pid-capture.py and reports run shape,
 setpoint segments, tracking quality, oscillation, saturation, integral
 trajectory, term balance, and actuation frequency.
 
-Error is computed natively in °C from (target_C − PV_C); the pid_error
-sensor stored in the capture is ignored because HA applies an absolute
-F = 9/5·C + 32 conversion to the delta and shifts it by +32°F.
+Error is computed natively in °F from (target_F − PV_F). Captures from
+older Celsius-internal versions of the integration are converted to °F
+on ingest so the report is always in °F. The stored pid_error sensor
+is ignored because HA applies an absolute F = 9/5·C + 32 conversion to
+deltas (the integration uses a "Δ°F" literal-string workaround to avoid
+this in live displays, but old captures may still carry the bogus offset).
 """
 from __future__ import annotations
 
@@ -25,6 +28,10 @@ from typing import Any
 
 
 Point = tuple[dt.datetime, float]
+
+
+def c_to_f(c: float) -> float:
+    return c * 9.0 / 5.0 + 32.0
 
 
 def f_to_c(f: float) -> float:
@@ -99,9 +106,15 @@ def index_history(history: list[list[dict[str, Any]]]) -> dict[str, list[dict[st
     return out
 
 
-def to_celsius(points: list[Point], unit: str | None) -> list[Point]:
-    if unit and unit.lower() in ("°f", "f", "fahrenheit"):
-        return [(t, f_to_c(v)) for t, v in points]
+def to_fahrenheit(points: list[Point], unit: str | None) -> list[Point]:
+    """Normalize a temperature series to °F.
+
+    New captures (post-Fahrenheit migration) report °F natively. Older
+    captures may report °C, so convert when needed. Anything else (no unit,
+    or already °F) is passed through unchanged.
+    """
+    if unit and unit.lower() in ("°c", "c", "celsius"):
+        return [(t, c_to_f(v)) for t, v in points]
     return points
 
 
@@ -113,27 +126,27 @@ def median_dt_seconds(points: list[Point]) -> float:
 
 
 def detect_setpoint_segments(
-    target_c_points: list[Point],
+    target_points: list[Point],
     pv_window: tuple[dt.datetime, dt.datetime] | None = None,
 ) -> list[tuple[dt.datetime, dt.datetime, float]]:
-    """Return [(start, end, setpoint_c), ...].
+    """Return [(start, end, setpoint_f), ...].
 
     Target history typically only contains a few entries (HA only logs changes).
     Extend the first segment back to PV window start and the last segment to
     PV window end, so a stable setpoint over the whole run becomes one segment
     that spans the full PV window.
     """
-    if not target_c_points:
+    if not target_points:
         return []
     segs: list[tuple[dt.datetime, dt.datetime, float]] = []
-    start_t, start_v = target_c_points[0]
+    start_t, start_v = target_points[0]
     prev_v = start_v
-    for t, v in target_c_points[1:]:
+    for t, v in target_points[1:]:
         if abs(v - prev_v) >= 0.05:
             segs.append((start_t, t, prev_v))
             start_t, prev_v = t, v
     # Close the last segment at the PV window end (not the last target update)
-    end_t = pv_window[1] if pv_window else target_c_points[-1][0]
+    end_t = pv_window[1] if pv_window else target_points[-1][0]
     segs.append((start_t, end_t, prev_v))
     # Extend the first segment back to PV window start if it starts later
     if pv_window and segs:
@@ -196,9 +209,10 @@ def analyze(path: str) -> dict[str, Any]:
     ext_key = external or f"sensor.{slug}_temperature"
     pv_raw = numeric_points(hist.get(ext_key, []))
     pv_unit = series_unit(hist.get(ext_key, []))
-    pv = to_celsius(pv_raw, pv_unit)
+    pv = to_fahrenheit(pv_raw, pv_unit)
 
-    # Prefer number entity (authoritative °C setpoint) over sensor (may be °F-displayed)
+    # Prefer number entity over sensor (both authoritative; number is the
+    # writer). Either may be °C in old captures or °F in new ones; normalize.
     tgt_num_key = f"number.{slug}_pid_target_temperature"
     tgt_sen_key = f"sensor.{slug}_pid_target_temperature"
     tgt_points = numeric_points(hist.get(tgt_num_key, []))
@@ -206,7 +220,7 @@ def analyze(path: str) -> dict[str, Any]:
     if not tgt_points:
         tgt_points = numeric_points(hist.get(tgt_sen_key, []))
         tgt_unit = series_unit(hist.get(tgt_sen_key, []))
-    tgt = to_celsius(tgt_points, tgt_unit)
+    tgt = to_fahrenheit(tgt_points, tgt_unit)
 
     # Fall back to current_states snapshot if no target history was captured
     if not tgt:
@@ -220,9 +234,9 @@ def analyze(path: str) -> dict[str, Any]:
             except (TypeError, ValueError):
                 continue
             u = (st.get("attributes") or {}).get("unit_of_measurement")
-            v_c = f_to_c(v) if (u and u.lower() in ("°f", "f", "fahrenheit")) else v
+            v_f = c_to_f(v) if (u and u.lower() in ("°c", "c", "celsius")) else v
             if pv:
-                tgt = [(pv[0][0], v_c), (pv[-1][0], v_c)]
+                tgt = [(pv[0][0], v_f), (pv[-1][0], v_f)]
             break
 
     integral = numeric_points(hist.get(f"sensor.{slug}_pid_integral", []))
@@ -306,8 +320,8 @@ def analyze(path: str) -> dict[str, Any]:
 
     duration_s = (pv[-1][0] - pv[0][0]).total_seconds()
     report["duration_min"] = duration_s / 60.0
-    report["pv_start_c"] = pv[0][1]
-    report["pv_end_c"] = pv[-1][1]
+    report["pv_start_f"] = pv[0][1]
+    report["pv_end_f"] = pv[-1][1]
 
     pv_window = (pv[0][0], pv[-1][0])
     segments = detect_setpoint_segments(tgt, pv_window) if tgt else []
@@ -331,20 +345,21 @@ def analyze(path: str) -> dict[str, Any]:
         seg_reports.append(
             {
                 "idx": idx,
-                "setpoint_c": sp,
+                "setpoint_f": sp,
                 "duration_min": (t1 - t0).total_seconds() / 60.0,
                 "n_samples": len(seg_pv),
-                "pv_start_c": seg_pv[0][1],
-                "pv_end_c": seg_pv[-1][1],
-                "peak_overshoot_c": -overshoot if overshoot < 0 else 0.0,
-                "peak_undershoot_c": undershoot if undershoot > 0 else 0.0,
-                "steady_mean_err_c": tail_mean,
-                "steady_std_err_c": tail_std,
-                "steady_pk_pk_c": pk_pk,
+                "pv_start_f": seg_pv[0][1],
+                "pv_end_f": seg_pv[-1][1],
+                "peak_overshoot_f": -overshoot if overshoot < 0 else 0.0,
+                "peak_undershoot_f": undershoot if undershoot > 0 else 0.0,
+                "steady_mean_err_f": tail_mean,
+                "steady_std_err_f": tail_std,
+                "steady_pk_pk_f": pk_pk,
                 "zero_crossings": zero_crossings(errors),
-                "settle_1c_sec": settling_time_seconds(seg_pv, sp, 1.0),
-                "settle_2c_sec": settling_time_seconds(seg_pv, sp, 2.0),
-                "mean_abs_err_c": S.mean(abs_err),
+                # Settling bands scaled to °F: ±1.8°F ≈ ±1°C, ±3.6°F ≈ ±2°C.
+                "settle_2f_sec": settling_time_seconds(seg_pv, sp, 1.8),
+                "settle_4f_sec": settling_time_seconds(seg_pv, sp, 3.6),
+                "mean_abs_err_f": S.mean(abs_err),
             }
         )
     report["segments"] = seg_reports
@@ -442,17 +457,17 @@ def print_report(r: dict[str, Any]) -> None:
     print(f"Duration (PV): {r['duration_min']:.1f} min   median dt: {r['median_dt_pv_sec']:.1f}s   samples: {r['counts']['pv']}")
     g = r["gains"]
     print(f"Gains (from config): Kp={g.get('kp')}  Ki={g.get('ki')}  Kd={g.get('kd')}   min_step={g.get('min_step')}W  min_interval={g.get('min_interval')}s")
-    print(f"PV: start={r['pv_start_c']:.2f}°C  end={r['pv_end_c']:.2f}°C")
+    print(f"PV: start={r['pv_start_f']:.2f}°F  end={r['pv_end_f']:.2f}°F")
     print(f"Setpoint changes in window: {r['setpoint_changes']}")
 
     for seg in r.get("segments", []):
         print()
-        print(f"  Segment #{seg['idx']}: SP={seg['setpoint_c']:.2f}°C  dur={seg['duration_min']:.1f} min  n={seg['n_samples']}")
-        print(f"    PV: {seg['pv_start_c']:.2f} → {seg['pv_end_c']:.2f} °C")
-        print(f"    Peak overshoot: {seg['peak_overshoot_c']:.2f}°C   peak undershoot: {seg['peak_undershoot_c']:.2f}°C")
-        print(f"    Steady state (last 30%): mean err {seg['steady_mean_err_c']:+.2f}°C   std {seg['steady_std_err_c']:.2f}°C   pk-pk {seg['steady_pk_pk_c']:.2f}°C")
-        print(f"    Settle to ±1°C: {fmt(seg['settle_1c_sec'], '.0f') if seg['settle_1c_sec'] is not None else 'never'}s   ±2°C: {fmt(seg['settle_2c_sec'], '.0f') if seg['settle_2c_sec'] is not None else 'never'}s")
-        print(f"    Error zero-crossings: {seg['zero_crossings']}   mean |err|: {seg['mean_abs_err_c']:.2f}°C")
+        print(f"  Segment #{seg['idx']}: SP={seg['setpoint_f']:.2f}°F  dur={seg['duration_min']:.1f} min  n={seg['n_samples']}")
+        print(f"    PV: {seg['pv_start_f']:.2f} → {seg['pv_end_f']:.2f} °F")
+        print(f"    Peak overshoot: {seg['peak_overshoot_f']:.2f}°F   peak undershoot: {seg['peak_undershoot_f']:.2f}°F")
+        print(f"    Steady state (last 30%): mean err {seg['steady_mean_err_f']:+.2f}°F   std {seg['steady_std_err_f']:.2f}°F   pk-pk {seg['steady_pk_pk_f']:.2f}°F")
+        print(f"    Settle to ±1.8°F: {fmt(seg['settle_2f_sec'], '.0f') if seg['settle_2f_sec'] is not None else 'never'}s   ±3.6°F: {fmt(seg['settle_4f_sec'], '.0f') if seg['settle_4f_sec'] is not None else 'never'}s")
+        print(f"    Error zero-crossings: {seg['zero_crossings']}   mean |err|: {seg['mean_abs_err_f']:.2f}°F")
 
     if "saturation" in r:
         s = r["saturation"]
@@ -495,11 +510,11 @@ def compare(a: dict[str, Any], b: dict[str, Any]) -> None:
         ("File",                     a["path"].split("/")[-1], b["path"].split("/")[-1]),
         ("Duration (min)",           f"{a.get('duration_min',0):.0f}", f"{b.get('duration_min',0):.0f}"),
         ("Setpoint segments",        a.get("setpoint_changes", 0) + 1, b.get("setpoint_changes", 0) + 1),
-        ("Largest seg SP (°C)",      cell(sa.get("setpoint_c")), cell(sb.get("setpoint_c"))),
-        ("  Peak overshoot",         cell(sa.get("peak_overshoot_c"), ".2f"), cell(sb.get("peak_overshoot_c"), ".2f")),
-        ("  Steady mean err",        cell(sa.get("steady_mean_err_c")), cell(sb.get("steady_mean_err_c"))),
-        ("  Steady std err",         cell(sa.get("steady_std_err_c"), ".2f"), cell(sb.get("steady_std_err_c"), ".2f")),
-        ("  Steady pk-pk",           cell(sa.get("steady_pk_pk_c"), ".2f"), cell(sb.get("steady_pk_pk_c"), ".2f")),
+        ("Largest seg SP (°F)",      cell(sa.get("setpoint_f")), cell(sb.get("setpoint_f"))),
+        ("  Peak overshoot",         cell(sa.get("peak_overshoot_f"), ".2f"), cell(sb.get("peak_overshoot_f"), ".2f")),
+        ("  Steady mean err",        cell(sa.get("steady_mean_err_f")), cell(sb.get("steady_mean_err_f"))),
+        ("  Steady std err",         cell(sa.get("steady_std_err_f"), ".2f"), cell(sb.get("steady_std_err_f"), ".2f")),
+        ("  Steady pk-pk",           cell(sa.get("steady_pk_pk_f"), ".2f"), cell(sb.get("steady_pk_pk_f"), ".2f")),
         ("Sat hi %",                 cell((a.get("saturation") or {}).get("pct_hi"), ".1f"), cell((b.get("saturation") or {}).get("pct_hi"), ".1f")),
         ("Sat lo %",                 cell((a.get("saturation") or {}).get("pct_lo"), ".1f"), cell((b.get("saturation") or {}).get("pct_lo"), ".1f")),
         ("Integral max",             cell((a.get("integral") or {}).get("max"), ".0f"), cell((b.get("integral") or {}).get("max"), ".0f")),

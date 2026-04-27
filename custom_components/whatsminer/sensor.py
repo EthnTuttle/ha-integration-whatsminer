@@ -52,7 +52,7 @@ SENSOR_TYPES: dict[str, SensorEntityDescription] = {
     "temperature_avg": SensorEntityDescription(
         key="temperature_avg",
         name="Temperature",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
@@ -103,14 +103,14 @@ BOARD_SENSOR_TYPES: dict[str, SensorEntityDescription] = {
     "temp": SensorEntityDescription(
         key="temp",
         name="Board Temperature",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     "chip_temp": SensorEntityDescription(
         key="chip_temp",
         name="Chip Temperature",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
@@ -141,7 +141,7 @@ PID_TARGET_SENSOR_KEY = "target"
 PID_TARGET_SENSOR = SensorEntityDescription(
     key="pid_target_temp",
     name="PID Target Temperature",
-    native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+    native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
     device_class=SensorDeviceClass.TEMPERATURE,
     state_class=SensorStateClass.MEASUREMENT,
     entity_category=EntityCategory.DIAGNOSTIC,
@@ -151,10 +151,11 @@ PID_INTERNAL_SENSORS: dict[str, SensorEntityDescription] = {
     "error": SensorEntityDescription(
         # Stores a temperature *delta* (setpoint − PV). Declaring it as
         # TEMPERATURE makes HA apply the absolute F = 9/5·C + 32 conversion
-        # and add a bogus +32°F offset in Fahrenheit displays.
+        # to a delta and add a bogus +32° offset, so we omit device_class
+        # and ship the unit string directly.
         key="pid_error",
         name="PID Error",
-        native_unit_of_measurement="Δ°C",
+        native_unit_of_measurement="Δ°F",
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:delta",

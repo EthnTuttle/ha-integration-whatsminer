@@ -27,6 +27,8 @@ try:
 except ImportError:
     AES = None
 
+from .unit_helpers import c_to_f
+
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_DATA = {
@@ -440,11 +442,13 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         result["wattage"] = summary.get("Power", 0)
         result["wattage_limit"] = summary.get("Power Limit", 0)
         
-        # Temperature (use Chip Temp Avg if available, otherwise PCB Temperature)
+        # Temperature: miner reports °C; convert at this seam so every
+        # downstream consumer (sensors, PID loop, chip-temp veto) sees °F.
         if "Chip Temp Avg" in summary:
-            result["temperature_avg"] = summary.get("Chip Temp Avg", 0)
+            temp_c = summary.get("Chip Temp Avg", 0)
         else:
-            result["temperature_avg"] = summary.get("Temperature", 0)
+            temp_c = summary.get("Temperature", 0)
+        result["temperature_avg"] = c_to_f(temp_c) if temp_c else 0
         
         # Calculate efficiency (J/TH = W / (TH/s))
         if result.get("wattage", 0) > 0 and result.get("hashrate", 0) > 0:
@@ -506,16 +510,16 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             hashrate = mhs_av / 1_000_000 if mhs_av > 1000 else mhs_av
             slot = dev.get("Slot", idx)
 
-            # PCB / board temperature
-            temp = dev.get("Temperature", 0)
+            # PCB / board temperature — miner reports °C, convert to °F.
+            temp_c = dev.get("Temperature", 0)
 
             # New firmware has no per-board chip temp; use Chip Temp Avg/Chip Temp if present
-            chip_temp = dev.get("Chip Temp Avg", dev.get("Chip Temp", temp))
+            chip_temp_c = dev.get("Chip Temp Avg", dev.get("Chip Temp", temp_c))
 
             hashboards.append({
                 "slot": slot,
-                "temp": temp,
-                "chip_temp": chip_temp,
+                "temp": c_to_f(temp_c) if temp_c else 0,
+                "chip_temp": c_to_f(chip_temp_c) if chip_temp_c else 0,
                 "hashrate": round(hashrate, 2),
                 "status": dev.get("Status", "Alive"),
             })
@@ -582,7 +586,7 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
                 f"Got data from {self.miner_ip}: "
                 f"hashrate={data.get('hashrate', 0):.2f} TH/s, "
                 f"expected={data.get('expected_hashrate', 0):.2f} TH/s, "
-                f"temp={data.get('temperature_avg', 0):.1f}°C, "
+                f"temp={data.get('temperature_avg', 0):.1f}°F, "
                 f"power={data.get('wattage', 0)}W, "
                 f"limit={data.get('wattage_limit', 0)}W, "
                 f"efficiency={data.get('efficiency', 0):.2f} J/TH, "

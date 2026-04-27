@@ -93,7 +93,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Whatsminer."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -196,7 +196,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         default=current_data.get(
                             CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=40, max=95)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=104, max=203)),
                     vol.Optional(
                         CONF_PID_KP,
                         default=current_data.get(CONF_PID_KP, DEFAULT_PID_KP),
@@ -232,21 +232,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         default=current_data.get(
                             CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=60, max=100)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=140, max=212)),
                     vol.Optional(
                         CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
                         default=current_data.get(
                             CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
                             DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=30, max=80)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=86, max=176)),
                     vol.Optional(
                         CONF_PID_SUPPLY_TEMP_LOCKOUT,
                         default=current_data.get(
                             CONF_PID_SUPPLY_TEMP_LOCKOUT,
                             DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=30, max=90)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=86, max=194)),
                     vol.Optional(
                         CONF_PID_DEMAND_ENTITIES,
                         default=current_data.get(
@@ -280,13 +280,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         default=current_data.get(
                             CONF_PID_COARSE_STEP_BAND, DEFAULT_PID_COARSE_STEP_BAND
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=50)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=90)),
                     vol.Optional(
                         CONF_PID_FINE_STEP_BAND,
                         default=current_data.get(
                             CONF_PID_FINE_STEP_BAND, DEFAULT_PID_FINE_STEP_BAND
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=50)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=90)),
                     vol.Optional(
                         CONF_PID_MIN_ADJUST_INTERVAL,
                         default=current_data.get(
@@ -305,13 +305,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         default=current_data.get(
                             CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=50)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=90)),
                     vol.Optional(
                         CONF_PID_SETPOINT_RAMP_RATE,
                         default=current_data.get(
                             CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=60)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=108)),
                 }
             ),
         )

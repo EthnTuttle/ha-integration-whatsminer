@@ -50,7 +50,7 @@ DEFAULT_POWER_MAX = 5000  # watts
 # not more often than this interval. Defaults err on the conservative side.
 # Three-band step resolution. The closer we are to setpoint, the smaller the
 # minimum step we'll fire — coarse moves fast when far off, fine nudges
-# precisely near target. Thresholds compare |SP − PV| in °C.
+# precisely near target. Thresholds compare |SP − PV| in °F.
 #   |err| > coarse_band            → coarse step (max swings to recover)
 #   fine_band < |err| ≤ coarse_band → medium step
 #   |err| ≤ fine_band              → fine step
@@ -59,8 +59,8 @@ DEFAULT_POWER_MAX = 5000  # watts
 DEFAULT_PID_MIN_POWER_STEP = 250  # watts (coarse — far from setpoint)
 DEFAULT_PID_MIN_POWER_STEP_MEDIUM = 150  # watts (mid)
 DEFAULT_PID_MIN_POWER_STEP_FINE = 50  # watts (fine — near setpoint)
-DEFAULT_PID_COARSE_STEP_BAND = 5.0  # °C — boundary between far and mid
-DEFAULT_PID_FINE_STEP_BAND = 2.0  # °C — boundary between mid and near
+DEFAULT_PID_COARSE_STEP_BAND = 9.0  # °F — boundary between far and mid (= 5°C)
+DEFAULT_PID_FINE_STEP_BAND = 3.6  # °F — boundary between mid and near (= 2°C)
 # Throttle is asymmetric: hydronic loops drop fast when zones call for heat
 # (urgent — comfort impact), but mild overshoot when zones satisfy is harmless.
 # Power-up commands use the shorter "increase" interval; power-down commands
@@ -68,11 +68,11 @@ DEFAULT_PID_FINE_STEP_BAND = 2.0  # °C — boundary between mid and near
 DEFAULT_PID_MIN_ADJUST_INTERVAL = 600  # seconds (10 min) — power-down floor
 DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE = 300  # seconds (5 min) — power-up floor
 # PID tuning — conservative starting point for a ~3kW miner.
-# Kp is in W/°C: 200 means a 1°C overshoot trims 200W. Tune in the options flow.
-DEFAULT_PID_KP = 200.0
-DEFAULT_PID_KI = 5.0
-DEFAULT_PID_KD = 100.0
-DEFAULT_PID_TARGET_TEMP = 75.0  # °C, a reasonable external-target starting point
+# Kp is in W/°F: 111.11 means a 1°F overshoot trims ~111W. Tune in the options flow.
+DEFAULT_PID_KP = 111.11
+DEFAULT_PID_KI = 2.78
+DEFAULT_PID_KD = 55.56
+DEFAULT_PID_TARGET_TEMP = 167.0  # °F, a reasonable external-target starting point (= 75°C)
 # Applied when PID Mode is turned off — avoids leaving the miner stuck at the
 # last wattage the PID commanded. Defaults to power_max (full tilt).
 DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
@@ -80,7 +80,7 @@ DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
 # chip-temp average crosses this threshold, the PID is overridden to power_min
 # regardless of what the external-sensor loop wants. Chip temp is NOT a PID
 # input (noisy, already firmware-managed) — it's purely a veto on output.
-DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
+DEFAULT_CHIP_TEMP_SAFETY_CAP = 185.0  # °F (= 85°C)
 # Supply-side (boiler-loop) protection — chip-temp guards the miner; these
 # guard the *plant*. Scout probe is upstream of the boiler's own high-limit,
 # so these caps fire well before the boiler trips.
@@ -88,8 +88,8 @@ DEFAULT_CHIP_TEMP_SAFETY_CAP = 85.0  # °C
 #   Hard cap: scout ≥ cap → also stop mining (latched). Operator must toggle
 #            Mining Control back on to resume; crossing this means the soft
 #            cap couldn't hold and the operator should review.
-DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP = 50.0  # °C (122 °F)
-DEFAULT_PID_SUPPLY_TEMP_LOCKOUT = 60.0  # °C (140 °F)
+DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP = 122.0  # °F (= 50°C)
+DEFAULT_PID_SUPPLY_TEMP_LOCKOUT = 140.0  # °F (= 60°C)
 # Demand-driven lockout: when these climate entities are all idle (none with
 # hvac_action == "heating"), force power_min and engage the safety binary
 # sensor. Empty list disables the feature entirely. Recoverable: the loop
@@ -100,8 +100,8 @@ DEFAULT_PID_DEMAND_ENTITIES: list[str] = []
 # headroom, integration continues — that's the disturbance-recovery case where
 # the integrator is supposed to push. Inside the band, integration always runs
 # normally. 0 disables the conditional freeze entirely.
-DEFAULT_PID_INTEGRAL_BAND = 3.0
-# Max rate (°C/min) at which the effective setpoint moves toward the user's
+DEFAULT_PID_INTEGRAL_BAND = 5.4  # °F (= 3°C)
+# Max rate (°F/min) at which the effective setpoint moves toward the user's
 # target. 0 disables ramping (the PID sees the full step immediately). A
 # non-zero value turns a large SP change into a smooth ramp, which keeps the
 # integrator well-behaved on slow plants.

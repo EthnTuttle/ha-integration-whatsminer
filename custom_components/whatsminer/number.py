@@ -144,10 +144,10 @@ class WhatsminerPIDTargetNumber(CoordinatorEntity, NumberEntity, RestoreEntity):
     """Dashboard-adjustable target temperature for the PID loop."""
 
     _attr_icon = "mdi:thermometer-lines"
-    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_native_unit_of_measurement = UnitOfTemperature.FAHRENHEIT
     _attr_mode = NumberMode.BOX
-    _attr_native_min_value = 20
-    _attr_native_max_value = 100
+    _attr_native_min_value = 68
+    _attr_native_max_value = 212
     _attr_native_step = 1
     _attr_has_entity_name = True
 

@@ -11,11 +11,17 @@ from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
+    CONF_PID_COARSE_STEP_BAND,
+    CONF_PID_FINE_STEP_BAND,
+    CONF_PID_INTEGRAL_BAND,
     CONF_PID_KD,
     CONF_PID_KI,
     CONF_PID_KP,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_POWER_STEP,
+    CONF_PID_SETPOINT_RAMP_RATE,
+    CONF_PID_SUPPLY_TEMP_LOCKOUT,
+    CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_TARGET_TEMP,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
@@ -36,6 +42,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import WhatsminerCoordinator
+from .unit_helpers import c_to_f
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -141,3 +148,75 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+# Conf keys whose values are absolute temperatures — migrate via F = 9/5·C + 32.
+_TEMPERATURE_KEYS_C_TO_F: tuple[str, ...] = (
+    CONF_PID_TARGET_TEMP,
+    CONF_CHIP_TEMP_SAFETY_CAP,
+    CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
+    CONF_PID_SUPPLY_TEMP_LOCKOUT,
+)
+
+# Conf keys whose values are temperature deltas or rates — migrate via ×1.8.
+_DELTA_KEYS_C_TO_F: tuple[str, ...] = (
+    CONF_PID_COARSE_STEP_BAND,
+    CONF_PID_FINE_STEP_BAND,
+    CONF_PID_INTEGRAL_BAND,
+    CONF_PID_SETPOINT_RAMP_RATE,
+)
+
+# Gain keys (W/°C → W/°F): divide by 1.8 so feeding the PID a 1.8× larger
+# error in °F produces the *same* watt output for the same physical conditions.
+_GAIN_KEYS_C_TO_F: tuple[str, ...] = (
+    CONF_PID_KP,
+    CONF_PID_KI,
+    CONF_PID_KD,
+)
+
+
+def _migrate_dict_celsius_to_fahrenheit(values: dict) -> dict:
+    """Return a copy of ``values`` with temperature/delta/gain keys converted.
+
+    Used by ``async_migrate_entry`` to walk both ``entry.data`` and
+    ``entry.options`` in lockstep, so a key stored on initial setup (``data``)
+    or later edited in the options flow (``options``) gets the same treatment.
+    """
+    out = dict(values)
+    for key in _TEMPERATURE_KEYS_C_TO_F:
+        if key in out and out[key] is not None:
+            out[key] = round(c_to_f(float(out[key])), 2)
+    for key in _DELTA_KEYS_C_TO_F:
+        if key in out and out[key] is not None:
+            out[key] = round(float(out[key]) * 1.8, 3)
+    for key in _GAIN_KEYS_C_TO_F:
+        if key in out and out[key] is not None:
+            out[key] = round(float(out[key]) / 1.8, 3)
+    return out
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate Whatsminer config entries between schema versions.
+
+    v1 → v2: integration switches from internal Celsius to internal Fahrenheit.
+    All temperature absolutes, deltas/rates, and W/°C gains are converted in
+    place so existing user tuning survives the unit change with no behavior
+    change. The migration is idempotent on re-runs (only fires when the stored
+    version is < ConfigFlow.VERSION).
+    """
+    _LOGGER.info(
+        "Considering migration for Whatsminer entry %s (version %s)",
+        entry.entry_id,
+        entry.version,
+    )
+    if entry.version == 1:
+        new_data = _migrate_dict_celsius_to_fahrenheit(entry.data)
+        new_options = _migrate_dict_celsius_to_fahrenheit(entry.options)
+        hass.config_entries.async_update_entry(
+            entry, data=new_data, options=new_options, version=2
+        )
+        _LOGGER.info(
+            "Whatsminer entry %s migrated v1 → v2 (Celsius → Fahrenheit)",
+            entry.entry_id,
+        )
+    return True

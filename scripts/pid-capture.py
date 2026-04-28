@@ -71,7 +71,12 @@ def fetch_config_entry_options(ha: str, token: str) -> dict | None:
 
         async def _go():
             ws_url = ha.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
-            async with websockets.connect(ws_url) as ws:
+            # Default websockets 16.x open_timeout is 10s — too short for HA when
+            # the supervisor is busy. Bump to 30s and use ping_timeout so dropped
+            # connections fail fast rather than hanging the whole capture.
+            async with websockets.connect(
+                ws_url, open_timeout=30, ping_timeout=15
+            ) as ws:
                 await ws.recv()  # auth_required
                 await ws.send(json.dumps({"type": "auth", "access_token": token}))
                 await ws.recv()  # auth_ok

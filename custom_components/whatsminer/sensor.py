@@ -184,6 +184,14 @@ PID_INTERNAL_SENSORS: dict[str, SensorEntityDescription] = {
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    "external": SensorEntityDescription(
+        key="pid_external_compensation",
+        name="PID External Compensation",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     "output": SensorEntityDescription(
         key="pid_output",
         name="PID Output",
@@ -199,6 +207,40 @@ PID_INTERNAL_SENSORS: dict[str, SensorEntityDescription] = {
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "pv_slope": SensorEntityDescription(
+        key="pid_pv_slope",
+        name="PID PV Slope",
+        native_unit_of_measurement="°F/min",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:chart-line",
+    ),
+    "demand_index": SensorEntityDescription(
+        key="pid_demand_index",
+        name="PID Demand Index",
+        native_unit_of_measurement="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:thermometer",
+    ),
+    "out_max_effective": SensorEntityDescription(
+        key="pid_out_max_effective",
+        name="PID Out Max Effective",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:arrow-up-bold",
+    ),
+    "out_min_effective": SensorEntityDescription(
+        key="pid_out_min_effective",
+        name="PID Out Min Effective",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:arrow-down-bold",
     ),
 }
 
@@ -470,6 +512,8 @@ class WhatsminerPIDSensor(CoordinatorEntity, SensorEntity):
             return None
         value = self._pid_state.get(self._state_key)
         if isinstance(value, float):
+            if self._state_key == "demand_index":
+                return round(value * 100.0, 1)
             return round(value, 2)
         return value
 

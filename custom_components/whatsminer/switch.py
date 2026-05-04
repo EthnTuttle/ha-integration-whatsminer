@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
 from time import time
 from typing import Any
@@ -27,16 +28,29 @@ from .const import (
     CONF_PID_KP,
     CONF_PID_COARSE_STEP_BAND,
     CONF_PID_DEMAND_ENTITIES,
+    CONF_PID_DEMAND_MODE,
+    CONF_PID_DEMAND_FLOOR_FRAC,
+    CONF_PID_DEMAND_CEILING_FRAC,
+    CONF_PID_DEMAND_WEIGHT_BY_ERROR,
     CONF_PID_FINE_STEP_BAND,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
     CONF_PID_MIN_POWER_STEP,
     CONF_PID_MIN_POWER_STEP_FINE,
     CONF_PID_MIN_POWER_STEP_MEDIUM,
+    CONF_PID_PRICE_HIGH,
+    CONF_PID_PRICE_LOW,
+    CONF_PID_PRICE_SENSOR,
     CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_SUPPLY_TEMP_LOCKOUT,
     CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
+    CONF_PID_SURPLUS_DEFICIT,
+    CONF_PID_SURPLUS_FULL,
+    CONF_PID_SURPLUS_SENSOR,
     CONF_PID_TARGET_TEMP,
+    CONF_PID_WEATHER_ENTITY,
+    CONF_PID_FORECAST_LOOKAHEAD_MIN,
+    CONF_PID_FORECAST_BLEND,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
@@ -47,6 +61,10 @@ from .const import (
     DEFAULT_PID_KP,
     DEFAULT_PID_COARSE_STEP_BAND,
     DEFAULT_PID_DEMAND_ENTITIES,
+    DEFAULT_PID_DEMAND_MODE,
+    DEFAULT_PID_DEMAND_FLOOR_FRAC,
+    DEFAULT_PID_DEMAND_CEILING_FRAC,
+    DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR,
     DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
@@ -57,6 +75,9 @@ from .const import (
     DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
     DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
     DEFAULT_PID_TARGET_TEMP,
+    DEFAULT_PID_WEATHER_ENTITY,
+    DEFAULT_PID_FORECAST_LOOKAHEAD_MIN,
+    DEFAULT_PID_FORECAST_BLEND,
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
     DOMAIN,
@@ -91,8 +112,10 @@ async def async_setup_entry(
             kp=config.get(CONF_PID_KP, DEFAULT_PID_KP),
             ki=config.get(CONF_PID_KI, DEFAULT_PID_KI),
             kd=config.get(CONF_PID_KD, DEFAULT_PID_KD),
+            ke=config.get(CONF_PID_KE, DEFAULT_PID_KE),
             default_target=config.get(CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP),
             external_sensor_id=config.get(CONF_EXTERNAL_TEMP_SENSOR) or None,
+            outdoor_temp_sensor_id=config.get(CONF_PID_OUTDOOR_TEMP_SENSOR) or None,
             default_power_limit=config.get(
                 CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
             ),
@@ -130,11 +153,39 @@ async def async_setup_entry(
             demand_entities=config.get(
                 CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
             ),
+            demand_mode=config.get(
+                CONF_PID_DEMAND_MODE, DEFAULT_PID_DEMAND_MODE
+            ),
+            demand_floor_frac=config.get(
+                CONF_PID_DEMAND_FLOOR_FRAC, DEFAULT_PID_DEMAND_FLOOR_FRAC
+            ),
+            demand_ceiling_frac=config.get(
+                CONF_PID_DEMAND_CEILING_FRAC, DEFAULT_PID_DEMAND_CEILING_FRAC
+            ),
+            demand_weight_by_error=config.get(
+                CONF_PID_DEMAND_WEIGHT_BY_ERROR, DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR
+            ),
             integral_band=config.get(
                 CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
             ),
             setpoint_ramp_rate=config.get(
                 CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
+            ),
+            slope_ewma_tau_s=config.get(
+                CONF_PID_SLOPE_EWMA_TAU_S, DEFAULT_PID_SLOPE_EWMA_TAU_S
+            ),
+            price_sensor_id=config.get(CONF_PID_PRICE_SENSOR) or None,
+            price_high=config.get(CONF_PID_PRICE_HIGH, 0.0),
+            price_low=config.get(CONF_PID_PRICE_LOW, 0.0),
+            surplus_sensor_id=config.get(CONF_PID_SURPLUS_SENSOR) or None,
+            surplus_deficit=config.get(CONF_PID_SURPLUS_DEFICIT, 0.0),
+            surplus_full=config.get(CONF_PID_SURPLUS_FULL, 0.0),
+            weather_entity_id=config.get(CONF_PID_WEATHER_ENTITY) or None,
+            forecast_lookahead_min=config.get(
+                CONF_PID_FORECAST_LOOKAHEAD_MIN, DEFAULT_PID_FORECAST_LOOKAHEAD_MIN
+            ),
+            forecast_blend=config.get(
+                CONF_PID_FORECAST_BLEND, DEFAULT_PID_FORECAST_BLEND
             ),
         ),
     ]
@@ -265,8 +316,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         kp: float,
         ki: float,
         kd: float,
+        ke: float,
         default_target: float,
         external_sensor_id: str | None,
+        outdoor_temp_sensor_id: str | None,
         default_power_limit: int,
         min_power_step: int,
         min_adjust_interval: int,
@@ -281,6 +334,20 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         supply_temp_safety_cap: float = DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
         supply_temp_lockout: float = DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
         demand_entities: list[str] | None = None,
+        demand_mode: str = DEFAULT_PID_DEMAND_MODE,
+        demand_floor_frac: float = DEFAULT_PID_DEMAND_FLOOR_FRAC,
+        demand_ceiling_frac: float = DEFAULT_PID_DEMAND_CEILING_FRAC,
+        demand_weight_by_error: bool = DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR,
+        slope_ewma_tau_s: float = 0.0,
+        price_sensor_id: str | None = None,
+        price_high: float = 0.0,
+        price_low: float = 0.0,
+        surplus_sensor_id: str | None = None,
+        surplus_deficit: float = 0.0,
+        surplus_full: float = 0.0,
+        weather_entity_id: str | None = None,
+        forecast_lookahead_min: int = DEFAULT_PID_FORECAST_LOOKAHEAD_MIN,
+        forecast_blend: float = DEFAULT_PID_FORECAST_BLEND,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -290,8 +357,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._power_min = power_min
         self._power_max = power_max
         self._kp = kp  # kept for bumpless-transfer seed in async_turn_on
+        self._ke = ke  # outdoor temp compensation coefficient (W/°F offset)
         self._default_target = default_target
         self._external_sensor_id = external_sensor_id
+        self._outdoor_temp_sensor_id = outdoor_temp_sensor_id
         self._default_power_limit = default_power_limit
         self._min_power_step = min_power_step
         self._min_power_step_medium = min_power_step_medium
@@ -304,13 +373,36 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._supply_temp_safety_cap = float(supply_temp_safety_cap)
         self._supply_temp_lockout = float(supply_temp_lockout)
         self._demand_entities: list[str] = list(demand_entities or [])
+        self._demand_mode = demand_mode
+        self._demand_floor_frac = float(demand_floor_frac)
+        self._demand_ceiling_frac = float(demand_ceiling_frac)
+        self._demand_weight_by_error = bool(demand_weight_by_error)
         self._no_demand_logged = False
         self._integral_band = float(integral_band)
         self._setpoint_ramp_rate = float(setpoint_ramp_rate)
+        self._slope_ewma_tau_s = float(slope_ewma_tau_s)
+        self._slope_ewma: float | None = None
+        self._slope_last_pv: tuple[float, float] | None = None
+        # Price/surplus envelope parameters
+        self._price_sensor_id = price_sensor_id
+        self._price_high = float(price_high)
+        self._price_low = float(price_low)
+        self._surplus_sensor_id = surplus_sensor_id
+        self._surplus_deficit = float(surplus_deficit)
+        self._surplus_full = float(surplus_full)
+        self._price_unavail_logged = False
+        self._surplus_unavail_logged = False
+        # Weather/forecast parameters
+        self._weather_entity_id = weather_entity_id
+        self._forecast_lookahead_min = forecast_lookahead_min
+        self._forecast_blend = float(forecast_blend)
+        self._forecast_cache: float | None = None
+        self._forecast_cache_time: float | None = None
         # Effective (possibly ramped) setpoint the PID actually sees. None until
         # the first tick seeds it from the current PV.
         self._ramped_target: float | None = None
         self._external_unavail_logged = False
+        self._outdoor_unavail_logged = False
         self._last_input_time: float | None = None
         self._last_commanded_power: int | None = None
         # Tracks mining on↔off transitions detected in _handle_coordinator_update
@@ -323,6 +415,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             kp=kp,
             ki=ki,
             kd=kd,
+            ke=ke,
             out_min=float(power_min),
             out_max=float(power_max),
             sampling_period=0,
@@ -437,6 +530,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "proportional": None,
                 "integral": None,
                 "derivative": None,
+                "external": None,
                 "output": None,
                 "requested_output": None,
                 "enabled": False,
@@ -549,6 +643,182 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 return None
         return value
 
+    def _read_outdoor_sensor_fahrenheit(self) -> float | None:
+        """Read the user-selected outdoor temperature sensor, converting to °F if needed."""
+        state = self.hass.states.get(self._outdoor_temp_sensor_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            if not self._outdoor_unavail_logged:
+                _LOGGER.warning(
+                    "Outdoor temp sensor %s unavailable — PID will not use feedforward",
+                    self._outdoor_temp_sensor_id,
+                )
+                self._outdoor_unavail_logged = True
+            return None
+        try:
+            value = float(state.state)
+        except (TypeError, ValueError):
+            _LOGGER.warning(
+                "Outdoor temp sensor %s returned non-numeric state %r",
+                self._outdoor_temp_sensor_id,
+                state.state,
+            )
+            return None
+        self._outdoor_unavail_logged = False
+        unit = state.attributes.get("unit_of_measurement")
+        if unit and unit != UnitOfTemperature.FAHRENHEIT:
+            try:
+                value = TemperatureConverter.convert(
+                    value, unit, UnitOfTemperature.FAHRENHEIT
+                )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Could not convert %s from %s to °F: %s",
+                    self._outdoor_temp_sensor_id,
+                    unit,
+                    err,
+                )
+                return None
+        return value
+
+    def _read_price_sensor(self) -> float | None:
+        """Read the price sensor (e.g., energy price in $/kWh)."""
+        if self._price_sensor_id is None:
+            return None
+        state = self.hass.states.get(self._price_sensor_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            if not self._price_unavail_logged:
+                _LOGGER.warning(
+                    "Price sensor %s unavailable — price envelope disabled",
+                    self._price_sensor_id,
+                )
+                self._price_unavail_logged = True
+            return None
+        try:
+            value = float(state.state)
+        except (TypeError, ValueError):
+            _LOGGER.warning(
+                "Price sensor %s returned non-numeric state %r",
+                self._price_sensor_id,
+                state.state,
+            )
+            return None
+        self._price_unavail_logged = False
+        return value
+
+    def _read_surplus_sensor(self) -> float | None:
+        """Read the surplus sensor (e.g., solar production in W, positive = excess)."""
+        if self._surplus_sensor_id is None:
+            return None
+        state = self.hass.states.get(self._surplus_sensor_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            if not self._surplus_unavail_logged:
+                _LOGGER.warning(
+                    "Surplus sensor %s unavailable — surplus envelope disabled",
+                    self._surplus_sensor_id,
+                )
+                self._surplus_unavail_logged = True
+            return None
+        try:
+            value = float(state.state)
+        except (TypeError, ValueError):
+            _LOGGER.warning(
+                "Surplus sensor %s returned non-numeric state %r",
+                self._surplus_sensor_id,
+                state.state,
+            )
+            return None
+        self._surplus_unavail_logged = False
+        return value
+
+    def _blended_outdoor_temp(self, now: float) -> float | None:
+        """Return outdoor temp with optional forecast blend.
+
+        If weather entity is configured, blends current outdoor temp with forecast
+        temperature at lookahead_min. Otherwise returns current outdoor temp.
+
+        Cache duration: 120 seconds (fixed).
+        """
+        outdoor = self._read_outdoor_sensor_fahrenheit()
+        if outdoor is None:
+            return None
+        if self._weather_entity_id is None:
+            return outdoor
+        if self._forecast_lookahead_min <= 0:
+            return outdoor
+        if self._forecast_blend <= 0:
+            return outdoor
+        if self._forecast_blend >= 1:
+            forecast_only = True
+            blend = 1.0
+        else:
+            forecast_only = False
+            blend = self._forecast_blend
+        cache_duration = 120.0
+        if (
+            self._forecast_cache is not None
+            and self._forecast_cache_time is not None
+            and now - self._forecast_cache_time < cache_duration
+        ):
+            cached_forecast = self._forecast_cache
+        else:
+            cached_forecast = None
+            try:
+                forecasts = self.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    {"entity_id": self._weather_entity_id},
+                    blocking=True,
+                    return_response=True,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Could not get forecast from %s: %s",
+                    self._weather_entity_id,
+                    err,
+                )
+                forecasts = None
+            if forecasts:
+                entity_forecasts = forecasts.get(self._weather_entity_id, {})
+                forecast_list = entity_forecasts.get("forecast", [])
+                if forecast_list:
+                    target_time = now + self._forecast_lookahead_min * 60
+                    best_forecast = None
+                    for entry in forecast_list:
+                        forecast_time = entry.get("datetime")
+                        if forecast_time:
+                            if isinstance(forecast_time, str):
+                                from datetime import datetime
+                                try:
+                                    forecast_time = datetime.fromisoformat(
+                                        forecast_time.replace("Z", "+00:00")
+                                    ).timestamp()
+                                except Exception:
+                                    continue
+                            if forecast_time >= target_time:
+                                best_forecast = entry
+                                break
+                    if best_forecast:
+                        temp = best_forecast.get("temperature")
+                        if temp is not None:
+                            unit = best_forecast.get("temperature_unit")
+                            if unit and unit != UnitOfTemperature.FAHRENHEIT:
+                                try:
+                                    temp = TemperatureConverter.convert(
+                                        temp, unit, UnitOfTemperature.FAHRENHEIT
+                                    )
+                                except Exception:
+                                    pass
+                            cached_forecast = float(temp)
+            if cached_forecast is not None:
+                self._forecast_cache = cached_forecast
+                self._forecast_cache_time = now
+        if cached_forecast is None:
+            return outdoor
+        if forecast_only:
+            return cached_forecast
+        blended = (1.0 - blend) * outdoor + blend * cached_forecast
+        return blended
+
     def _current_temperature(self) -> float | None:
         """Return the regulated variable read from the external sensor.
 
@@ -560,20 +830,18 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return None
         return self._read_external_sensor_fahrenheit()
 
-    def _has_demand(self) -> bool | None:
-        """Return whether any configured demand entity is calling for heat.
+    def _demand_index(self) -> float | None:
+        """Return demand index (0.0-1.0) based on configured climate entities.
 
-        Used as a flow-proxy: if no thermostat is calling, the loop pump is
-        likely idle and the boiler heat exchanger is stagnant — we should not
-        keep dumping power into it. Returns:
+        Used to scale PID output bounds. Returns:
           None  — feature disabled (no demand entities configured).
-          True  — at least one entity reports hvac_action == "heating".
-          False — entities are configured but none report active heating
-                  (or all are unavailable; fail safe = treat as no demand).
+          0.0   — no heating demand (all idle/off/unavailable).
+          1.0   — full heating demand.
+          float — weighted average across known entities.
         """
         if not self._demand_entities:
             return None
-        any_known = False
+        weights: list[float] = []
         for eid in self._demand_entities:
             state = self.hass.states.get(eid)
             if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
@@ -581,15 +849,56 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             action = state.attributes.get("hvac_action")
             if action in (None, "unavailable"):
                 continue
-            any_known = True
             if action == "heating":
-                return True
-        if not any_known:
+                if self._demand_weight_by_error:
+                    cur = state.attributes.get("current_temperature")
+                    sp = state.attributes.get("temperature")
+                    if cur is not None and sp is not None:
+                        try:
+                            w = max(0.0, min((float(sp) - float(cur)) / 2.0, 1.0))
+                        except (TypeError, ValueError):
+                            w = 1.0
+                    else:
+                        w = 1.0
+                else:
+                    w = 1.0
+                weights.append(w)
+            elif self._demand_weight_by_error and action in ("idle", "off"):
+                weights.append(0.0)
+            elif not self._demand_weight_by_error and action != "heating":
+                weights.append(0.0)
+        if not weights:
             _LOGGER.warning(
                 "All demand entities (%s) are unavailable — failing safe to no-demand",
                 ", ".join(self._demand_entities),
             )
-        return False
+            return 0.0
+        return sum(weights) / len(weights)
+
+    def _effective_out_min(self) -> float:
+        """Return effective output minimum based on demand index.
+
+        In lockout mode: returns power_min when index == 0.
+        In envelope mode: scales by floor_frac * index.
+        """
+        if self._demand_mode != "envelope":
+            return float(self._power_min)
+        index = self._demand_index()
+        if index is None:
+            return float(self._power_min)
+        return float(self._power_min) + (float(self._power_max) - float(self._power_min)) * self._demand_floor_frac * index
+
+    def _effective_out_max(self) -> float:
+        """Return effective output maximum based on demand index.
+
+        In envelope mode: scales ceiling by (1 - (1-ceiling_frac) * (1-index)).
+        """
+        if self._demand_mode != "envelope":
+            return float(self._power_max)
+        index = self._demand_index()
+        if index is None:
+            return float(self._power_max)
+        return float(self._power_min) + (float(self._power_max) - float(self._power_min)) * (1.0 - (1.0 - self._demand_ceiling_frac) * (1.0 - index))
 
     async def _run_pid_step(self) -> None:
         """Compute PID output and push to the miner if it changed meaningfully."""
@@ -599,6 +908,19 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # If the miner is off we have nothing to regulate — don't burn a token.
         if not self.coordinator.data.get("is_mining"):
             return
+
+        now = time()
+        if self._slope_last_pv is not None and self._slope_ewma_tau_s > 0:
+            prev_t, prev_v = self._slope_last_pv
+            dt = now - prev_t
+            if dt > 0:
+                inst = (temp - prev_v) / (dt / 60.0)
+                alpha = 1 - math.exp(-dt / self._slope_ewma_tau_s)
+                self._slope_ewma = (
+                    inst if self._slope_ewma is None
+                    else self._slope_ewma + alpha * (inst - self._slope_ewma)
+                )
+        self._slope_last_pv = (now, temp)
 
         user_target = self._pid_state.get("target")
         if user_target is None:
@@ -638,12 +960,60 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # internal logic. Cheap; only restored when we decide to freeze.
         integral_snapshot = self._pid.integral
 
+        # Read outdoor temperature for feedforward compensation. If sensor is
+        # not configured or unavailable, pass None (leaves _dext=0, _external=0).
+        # Uses blended forecast temperature when weather entity is configured.
+        outdoor_temp = None
+        if self._outdoor_temp_sensor_id is not None and self._ke > 0:
+            outdoor_temp = self._blended_outdoor_temp(now)
+
+        # Envelope mode: apply demand-scaled output bounds before calc() so the
+        # integrator sees the real operating range. Lockout mode uses binary
+        # logic after calc() and ignores these bounds.
+        if self._demand_mode == "envelope" and self._demand_entities:
+            self._pid.out_min = self._effective_out_min()
+            self._pid.out_max = self._effective_out_max()
+
+        # Price/surplus envelope: further constrain out_min/out_max based on
+        # time-of-use price and solar/battery surplus. Applied after demand
+        # envelope, so order of precedence is:
+        # safety_caps > demand_envelope > tou/surplus_envelope > pid_output
+        price_score = 1.0
+        surplus_score = 1.0
+        if self._price_sensor_id is not None or self._surplus_sensor_id is not None:
+            current_out_min = self._pid.out_min
+            current_out_max = self._pid.out_max
+
+            if self._price_sensor_id is not None and self._price_high > self._price_low:
+                price = self._read_price_sensor()
+                if price is not None:
+                    price_score = (self._price_high - price) / (self._price_high - self._price_low)
+                    price_score = max(0.0, min(1.0, price_score))
+                    price_score = round(price_score / 0.05) * 0.05
+
+            if self._surplus_sensor_id is not None and self._surplus_full > self._surplus_deficit:
+                surplus = self._read_surplus_sensor()
+                if surplus is not None:
+                    surplus_score = (surplus - self._surplus_deficit) / (self._surplus_full - self._surplus_deficit)
+                    surplus_score = max(0.0, min(1.0, surplus_score))
+                    surplus_score = round(surplus_score / 0.05) * 0.05
+
+            power_range = current_out_max - current_out_min
+            multiplier = min(price_score, surplus_score, 1.0)
+            self._pid.out_max = current_out_min + power_range * multiplier
+            self._pid.out_min = current_out_min
+
+        # Store effective bounds for diagnostic sensors
+        self._pid_state["out_max_effective"] = int(self._pid.out_max)
+        self._pid_state["out_min_effective"] = int(self._pid.out_min)
+
         try:
             output, did_calc = self._pid.calc(
                 input_val=float(temp),
                 set_point=float(target),
                 input_time=now,
                 last_input_time=last,
+                ext_temp=outdoor_temp,
             )
         except Exception as err:  # defensive — don't break coordinator loop
             _LOGGER.exception("PID calculation failed: %s", err)
@@ -718,24 +1088,26 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 new_power,
             )
 
-        # Demand lockout: if no configured thermostat is calling for heat,
-        # the loop pump is likely idle and we have no flow to dissipate
-        # power into. Force power_min and engage safety; auto-resumes the
-        # next time any demand entity returns to "heating".
-        demand = self._has_demand()
-        if demand is False:
-            new_power = self._power_min
-            safety_engaged = True
-            if not self._no_demand_logged:
-                _LOGGER.warning(
-                    "No demand from %s — forcing %dW (PID override) until a thermostat calls",
-                    ", ".join(self._demand_entities),
-                    new_power,
-                )
-                self._no_demand_logged = True
-        elif demand is True and self._no_demand_logged:
-            _LOGGER.info("Demand returned — releasing no-demand lockout")
-            self._no_demand_logged = False
+        # Demand lockout: in lockout mode (default), if no configured thermostat
+        # is calling for heat, the loop pump is likely idle and we have no flow
+        # to dissipate power into. Force power_min and engage safety; auto-resumes
+        # the next time any demand entity returns to "heating". In envelope mode,
+        # the output bounds are already scaled before calc().
+        demand_index = self._demand_index()
+        if self._demand_mode == "lockout" and self._demand_entities:
+            if demand_index == 0.0 or demand_index is None:
+                new_power = self._power_min
+                safety_engaged = True
+                if not self._no_demand_logged:
+                    _LOGGER.warning(
+                        "No demand from %s — forcing %dW (PID override) until a thermostat calls",
+                        ", ".join(self._demand_entities),
+                        new_power,
+                    )
+                    self._no_demand_logged = True
+            elif self._no_demand_logged:
+                _LOGGER.info("Demand returned — releasing no-demand lockout")
+                self._no_demand_logged = False
 
         # Publish PID internals on every successful calc (even when we don't
         # actuate) so the diagnostic sensors / charts stay live while the loop
@@ -747,10 +1119,13 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "proportional": self._pid.proportional,
                 "integral": self._pid.integral,
                 "derivative": self._pid.derivative,
+                "external": self._pid.external,
                 "output": new_power,
                 "requested_output": requested_power,
                 "enabled": True,
                 "safety_engaged": safety_engaged,
+                "pv_slope": self._slope_ewma,
+                "demand_index": demand_index,
             }
         )
 
@@ -793,6 +1168,15 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         else:
             effective_min_step = self._min_power_step
             band_label = "coarse"
+        if self._slope_ewma is not None and self._slope_ewma_tau_s > 0:
+            target_dir = math.copysign(1, target - temp)
+            if math.copysign(1, self._slope_ewma) == target_dir and abs(self._slope_ewma) > 0.5:
+                if effective_min_step == self._min_power_step:
+                    effective_min_step = self._min_power_step_medium
+                    band_label = "coarse→medium"
+                elif effective_min_step == self._min_power_step_medium:
+                    effective_min_step = self._min_power_step_fine
+                    band_label = "medium→fine"
         step_ok = delta >= effective_min_step
         effective_interval = (
             self._min_adjust_interval_increase

@@ -23,16 +23,22 @@ from .const import (
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_INTEGRAL_BAND,
     CONF_PID_KD,
+    CONF_PID_KE,
     CONF_PID_KI,
     CONF_PID_KP,
     CONF_PID_COARSE_STEP_BAND,
     CONF_PID_DEMAND_ENTITIES,
+    CONF_PID_DEMAND_MODE,
+    CONF_PID_DEMAND_FLOOR_FRAC,
+    CONF_PID_DEMAND_CEILING_FRAC,
+    CONF_PID_DEMAND_WEIGHT_BY_ERROR,
     CONF_PID_FINE_STEP_BAND,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
     CONF_PID_MIN_POWER_STEP,
     CONF_PID_MIN_POWER_STEP_FINE,
     CONF_PID_MIN_POWER_STEP_MEDIUM,
+    CONF_PID_OUTDOOR_TEMP_SENSOR,
     CONF_PID_SUPPLY_TEMP_LOCKOUT,
     CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_SETPOINT_RAMP_RATE,
@@ -44,16 +50,22 @@ from .const import (
     DEFAULT_PASSWORD,
     DEFAULT_PID_INTEGRAL_BAND,
     DEFAULT_PID_KD,
+    DEFAULT_PID_KE,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
     DEFAULT_PID_COARSE_STEP_BAND,
     DEFAULT_PID_DEMAND_ENTITIES,
+    DEFAULT_PID_DEMAND_MODE,
+    DEFAULT_PID_DEMAND_FLOOR_FRAC,
+    DEFAULT_PID_DEMAND_CEILING_FRAC,
+    DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR,
     DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
     DEFAULT_PID_MIN_POWER_STEP,
     DEFAULT_PID_MIN_POWER_STEP_FINE,
     DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
+    DEFAULT_PID_OUTDOOR_TEMP_SENSOR,
     DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
     DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
     DEFAULT_PID_SETPOINT_RAMP_RATE,
@@ -80,20 +92,23 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         password=data.get(CONF_PASSWORD, DEFAULT_PASSWORD),
     )
 
-    # Test connection by getting summary
     if not await api.test_connection():
         raise CannotConnect
 
-    # Return info that you want to store in the config entry
     return {
         "title": data.get(CONF_NAME) or f"Whatsminer {data[CONF_HOST]}",
     }
 
 
+def _get_current_values(config_entry: config_entries.ConfigEntry) -> dict[str, Any]:
+    """Merge data and options, preferring options for any overlap."""
+    return {**config_entry.data, **config_entry.options}
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Whatsminer."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -108,11 +123,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
-                # Check if this miner is already configured
                 await self.async_set_unique_id(
                     f"whatsminer_{user_input[CONF_HOST].replace('.', '_')}"
                 )
@@ -123,7 +137,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data=user_input,
                 )
 
-        # Show the form
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -152,24 +165,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Create the options flow."""
-        return OptionsFlowHandler()
+        return OptionsFlowHandler(config_entry)
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for Whatsminer."""
 
-    # HA wires self.config_entry automatically via the OptionsFlow base class
-    # (it's a read-only property in 2024.12+), so we don't override __init__.
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+        self._current_data: dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage the options."""
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+        """Step 1: Connection, power bounds, target, gains."""
+        self._current_data = _get_current_values(self.config_entry)
 
-        # Get current values from config entry data and options
-        current_data = {**self.config_entry.data, **self.config_entry.options}
+        if user_input is not None:
+            self._current_data.update(user_input)
+            return await self.async_step_safety()
 
         return self.async_show_form(
             step_id="init",
@@ -177,42 +192,148 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 {
                     vol.Optional(
                         CONF_PASSWORD,
-                        default=current_data.get(CONF_PASSWORD, DEFAULT_PASSWORD),
+                        default=self._current_data.get(CONF_PASSWORD, DEFAULT_PASSWORD),
                     ): str,
                     vol.Optional(
                         CONF_SCAN_INTERVAL,
-                        default=current_data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                        default=self._current_data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                     ): vol.All(vol.Coerce(int), vol.Range(min=10, max=300)),
                     vol.Optional(
                         CONF_POWER_MIN,
-                        default=current_data.get(CONF_POWER_MIN, DEFAULT_POWER_MIN),
+                        default=self._current_data.get(CONF_POWER_MIN, DEFAULT_POWER_MIN),
                     ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
                     vol.Optional(
                         CONF_POWER_MAX,
-                        default=current_data.get(CONF_POWER_MAX, DEFAULT_POWER_MAX),
+                        default=self._current_data.get(CONF_POWER_MAX, DEFAULT_POWER_MAX),
                     ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
                     vol.Optional(
                         CONF_PID_TARGET_TEMP,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=104, max=203)),
                     vol.Optional(
                         CONF_PID_KP,
-                        default=current_data.get(CONF_PID_KP, DEFAULT_PID_KP),
+                        default=self._current_data.get(CONF_PID_KP, DEFAULT_PID_KP),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=5000)),
                     vol.Optional(
                         CONF_PID_KI,
-                        default=current_data.get(CONF_PID_KI, DEFAULT_PID_KI),
+                        default=self._current_data.get(CONF_PID_KI, DEFAULT_PID_KI),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
                     vol.Optional(
                         CONF_PID_KD,
-                        default=current_data.get(CONF_PID_KD, DEFAULT_PID_KD),
+                        default=self._current_data.get(CONF_PID_KD, DEFAULT_PID_KD),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=5000)),
+                    vol.Optional(
+                        CONF_DEFAULT_POWER_LIMIT,
+                        default=self._current_data.get(
+                            CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
+                }
+            ),
+        )
+
+    async def async_step_safety(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 2: Chip/supply caps, lockout."""
+        if user_input is not None:
+            self._current_data.update(user_input)
+            return await self.async_step_demand()
+
+        return self.async_show_form(
+            step_id="safety",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_CHIP_TEMP_SAFETY_CAP,
+                        default=self._current_data.get(
+                            CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=140, max=212)),
+                    vol.Optional(
+                        CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
+                        default=self._current_data.get(
+                            CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
+                            DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=86, max=176)),
+                    vol.Optional(
+                        CONF_PID_SUPPLY_TEMP_LOCKOUT,
+                        default=self._current_data.get(
+                            CONF_PID_SUPPLY_TEMP_LOCKOUT,
+                            DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=86, max=194)),
+                }
+            ),
+        )
+
+    async def async_step_demand(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 3: Demand entities, mode, envelope."""
+        if user_input is not None:
+            self._current_data.update(user_input)
+            return await self.async_step_feedforward()
+
+        return self.async_show_form(
+            step_id="demand",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_PID_DEMAND_ENTITIES,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
+                        ),
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="climate", multiple=True)
+                    ),
+                    vol.Optional(
+                        CONF_PID_DEMAND_MODE,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_MODE, DEFAULT_PID_DEMAND_MODE
+                        ),
+                    ): vol.In(["lockout", "envelope"]),
+                    vol.Optional(
+                        CONF_PID_DEMAND_FLOOR_FRAC,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_FLOOR_FRAC, DEFAULT_PID_DEMAND_FLOOR_FRAC
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_CEILING_FRAC,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_CEILING_FRAC, DEFAULT_PID_DEMAND_CEILING_FRAC
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_WEIGHT_BY_ERROR,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_WEIGHT_BY_ERROR, DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR
+                        ),
+                    ): bool,
+                }
+            ),
+        )
+
+    async def async_step_feedforward(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 4: Outdoor sensor, Ke, weather + forecast."""
+        if user_input is not None:
+            self._current_data.update(user_input)
+            return await self.async_step_envelopes()
+
+        return self.async_show_form(
+            step_id="feedforward",
+            data_schema=vol.Schema(
+                {
                     vol.Required(
                         CONF_EXTERNAL_TEMP_SENSOR,
                         description={
-                            "suggested_value": current_data.get(
+                            "suggested_value": self._current_data.get(
                                 CONF_EXTERNAL_TEMP_SENSOR
                             )
                         },
@@ -222,96 +343,222 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         )
                     ),
                     vol.Optional(
-                        CONF_DEFAULT_POWER_LIMIT,
-                        default=current_data.get(
-                            CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
-                        ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
-                    vol.Optional(
-                        CONF_CHIP_TEMP_SAFETY_CAP,
-                        default=current_data.get(
-                            CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
-                        ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=140, max=212)),
-                    vol.Optional(
-                        CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
-                        default=current_data.get(
-                            CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
-                            DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
-                        ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=86, max=176)),
-                    vol.Optional(
-                        CONF_PID_SUPPLY_TEMP_LOCKOUT,
-                        default=current_data.get(
-                            CONF_PID_SUPPLY_TEMP_LOCKOUT,
-                            DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
-                        ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=86, max=194)),
-                    vol.Optional(
-                        CONF_PID_DEMAND_ENTITIES,
-                        default=current_data.get(
-                            CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
-                        ),
+                        CONF_PID_OUTDOOR_TEMP_SENSOR,
+                        description={
+                            "suggested_value": self._current_data.get(
+                                CONF_PID_OUTDOOR_TEMP_SENSOR
+                            )
+                        },
                     ): EntitySelector(
-                        EntitySelectorConfig(domain="climate", multiple=True)
+                        EntitySelectorConfig(
+                            domain="sensor", device_class="temperature"
+                        )
                     ),
                     vol.Optional(
+                        CONF_PID_KE,
+                        default=self._current_data.get(CONF_PID_KE, DEFAULT_PID_KE),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=500)),
+                    vol.Optional(
+                        CONF_PID_WEATHER_ENTITY,
+                        description={
+                            "suggested_value": self._current_data.get(
+                                CONF_PID_WEATHER_ENTITY
+                            )
+                        },
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="weather")
+                    ),
+                    vol.Optional(
+                        CONF_PID_FORECAST_LOOKAHEAD_MIN,
+                        default=self._current_data.get(
+                            CONF_PID_FORECAST_LOOKAHEAD_MIN,
+                            DEFAULT_PID_FORECAST_LOOKAHEAD_MIN,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=360)),
+                    vol.Optional(
+                        CONF_PID_FORECAST_BLEND,
+                        default=self._current_data.get(
+                            CONF_PID_FORECAST_BLEND,
+                            DEFAULT_PID_FORECAST_BLEND,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+                }
+            ),
+        )
+
+    async def async_step_envelopes(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 5: Price, surplus (Time-of-Use / Solar / Battery Envelopes)."""
+        if user_input is not None:
+            self._current_data.update(user_input)
+            return await self.async_step_tuning()
+
+        return self.async_show_form(
+            step_id="envelopes",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_PID_PRICE_SENSOR,
+                        description={
+                            "suggested_value": self._current_data.get(
+                                CONF_PID_PRICE_SENSOR
+                            )
+                        },
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_PID_PRICE_HIGH,
+                        default=self._current_data.get(CONF_PID_PRICE_HIGH, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                    vol.Optional(
+                        CONF_PID_PRICE_LOW,
+                        default=self._current_data.get(CONF_PID_PRICE_LOW, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                    vol.Optional(
+                        CONF_PID_SURPLUS_SENSOR,
+                        description={
+                            "suggested_value": self._current_data.get(
+                                CONF_PID_SURPLUS_SENSOR
+                            )
+                        },
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_PID_SURPLUS_DEFICIT,
+                        default=self._current_data.get(CONF_PID_SURPLUS_DEFICIT, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-10000, max=10000)),
+                    vol.Optional(
+                        CONF_PID_SURPLUS_FULL,
+                        default=self._current_data.get(CONF_PID_SURPLUS_FULL, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-10000, max=10000)),
+                }
+            ),
+        )
+
+    async def async_step_tuning(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 6: Step bands, intervals, integral band, ramp rate, slope τ."""
+        if user_input is not None:
+            self._current_data.update(user_input)
+            return self.async_create_entry(title="", data=self._current_data)
+
+        return self.async_show_form(
+            step_id="tuning",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
                         CONF_PID_MIN_POWER_STEP,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=2500)),
                     vol.Optional(
                         CONF_PID_MIN_POWER_STEP_MEDIUM,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_MIN_POWER_STEP_MEDIUM,
                             DEFAULT_PID_MIN_POWER_STEP_MEDIUM,
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=2500)),
                     vol.Optional(
                         CONF_PID_MIN_POWER_STEP_FINE,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_MIN_POWER_STEP_FINE,
                             DEFAULT_PID_MIN_POWER_STEP_FINE,
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=2500)),
                     vol.Optional(
                         CONF_PID_COARSE_STEP_BAND,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_COARSE_STEP_BAND, DEFAULT_PID_COARSE_STEP_BAND
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=90)),
                     vol.Optional(
                         CONF_PID_FINE_STEP_BAND,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_FINE_STEP_BAND, DEFAULT_PID_FINE_STEP_BAND
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=90)),
                     vol.Optional(
                         CONF_PID_MIN_ADJUST_INTERVAL,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
                     vol.Optional(
                         CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
                             DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
                     vol.Optional(
                         CONF_PID_INTEGRAL_BAND,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=90)),
-                    vol.Optional(
+vol.Optional(
                         CONF_PID_SETPOINT_RAMP_RATE,
                         default=current_data.get(
                             CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=108)),
+                    vol.Optional(
+                        CONF_PID_PRICE_SENSOR,
+                        default=current_data.get(CONF_PID_PRICE_SENSOR),
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_PID_PRICE_HIGH,
+                        default=current_data.get(CONF_PID_PRICE_HIGH, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                    vol.Optional(
+                        CONF_PID_PRICE_LOW,
+                        default=current_data.get(CONF_PID_PRICE_LOW, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                    vol.Optional(
+                        CONF_PID_SURPLUS_SENSOR,
+                        default=current_data.get(CONF_PID_SURPLUS_SENSOR),
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_PID_SURPLUS_DEFICIT,
+                        default=current_data.get(CONF_PID_SURPLUS_DEFICIT, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-10000, max=10000)),
+                    vol.Optional(
+                        CONF_PID_SURPLUS_FULL,
+                        default=current_data.get(CONF_PID_SURPLUS_FULL, 0.0),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-10000, max=10000)),
+                    vol.Optional(
+                        CONF_PID_WEATHER_ENTITY,
+                        default=current_data.get(CONF_PID_WEATHER_ENTITY, DEFAULT_PID_WEATHER_ENTITY),
+                    ): EntitySelector(
+                        EntitySelectorConfig(domain="weather")
+                    ),
+                    vol.Optional(
+                        CONF_PID_FORECAST_LOOKAHEAD_MIN,
+                        default=current_data.get(
+                            CONF_PID_FORECAST_LOOKAHEAD_MIN, DEFAULT_PID_FORECAST_LOOKAHEAD_MIN
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=360)),
+vol.Optional(
+                        CONF_PID_SETPOINT_RAMP_RATE,
+                        default=current_data.get(
+                            CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=108)),
+                    vol.Optional(
+                        CONF_PID_SLOPE_EWMA_TAU_S,
+                        default=current_data.get(
+                            CONF_PID_SLOPE_EWMA_TAU_S, DEFAULT_PID_SLOPE_EWMA_TAU_S
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=3600)),
                 }
             ),
         )

@@ -79,18 +79,10 @@
         "title": "Whatsminer Options: Demand & Envelope",
         "description": "Configure demand entities that control when the PID requests power.",
         "data": {
-          "pid_demand_entities": "Demand Entities (climate devices)",
-          "pid_demand_mode": "Demand Mode",
-          "pid_demand_floor_frac": "Demand Floor Fraction",
-          "pid_demand_ceiling_frac": "Demand Ceiling Fraction",
-          "pid_demand_weight_by_error": "Weight by Temperature Error"
+          "pid_demand_entities": "Demand Entities (climate devices)"
         },
         "data_description": {
-          "pid_demand_entities": "Climate entities to monitor for heating demand. When all are idle, power is clamped to minimum.",
-          "pid_demand_mode": "lockout = binary (no demand = power_min), envelope = continuous (scale output by demand)",
-          "pid_demand_floor_frac": "Minimum output fraction when demand index is 0 (envelope mode only)",
-          "pid_demand_ceiling_frac": "Maximum output fraction when demand index is 1 (envelope mode only)",
-          "pid_demand_weight_by_error": "Weight heating demand by how far below setpoint each zone is"
+          "pid_demand_entities": "Climate entities to monitor for heating demand. When all are idle, power is clamped to minimum."
         }
       },
       "feedforward": {

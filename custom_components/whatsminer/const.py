@@ -22,8 +22,10 @@ CONF_POWER_MAX = "power_max"
 CONF_PID_KP = "pid_kp"
 CONF_PID_KI = "pid_ki"
 CONF_PID_KD = "pid_kd"
+CONF_PID_KE = "pid_ke"
 CONF_PID_TARGET_TEMP = "pid_target_temp"
 CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
+CONF_PID_OUTDOOR_TEMP_SENSOR = "pid_outdoor_temp_sensor"
 CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
 CONF_PID_MIN_POWER_STEP_MEDIUM = "pid_min_power_step_medium"
@@ -36,8 +38,21 @@ CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
 CONF_PID_SUPPLY_TEMP_SAFETY_CAP = "pid_supply_temp_safety_cap"
 CONF_PID_SUPPLY_TEMP_LOCKOUT = "pid_supply_temp_lockout"
 CONF_PID_DEMAND_ENTITIES = "pid_demand_entities"
+CONF_PID_DEMAND_MODE = "pid_demand_mode"
+CONF_PID_DEMAND_FLOOR_FRAC = "pid_demand_floor_frac"
+CONF_PID_DEMAND_CEILING_FRAC = "pid_demand_ceiling_frac"
+CONF_PID_DEMAND_WEIGHT_BY_ERROR = "pid_demand_weight_by_error"
 CONF_PID_INTEGRAL_BAND = "pid_integral_band"
 CONF_PID_SETPOINT_RAMP_RATE = "pid_setpoint_ramp_rate"
+CONF_PID_PRICE_SENSOR = "pid_price_sensor"
+CONF_PID_PRICE_HIGH = "pid_price_high"
+CONF_PID_PRICE_LOW = "pid_price_low"
+CONF_PID_SURPLUS_SENSOR = "pid_surplus_sensor"
+CONF_PID_SURPLUS_DEFICIT = "pid_surplus_deficit"
+CONF_PID_SURPLUS_FULL = "pid_surplus_full"
+CONF_PID_WEATHER_ENTITY = "pid_weather_entity"
+CONF_PID_FORECAST_LOOKAHEAD_MIN = "pid_forecast_lookahead_min"
+CONF_PID_FORECAST_BLEND = "pid_forecast_blend"
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -72,7 +87,9 @@ DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE = 300  # seconds (5 min) — power-up f
 DEFAULT_PID_KP = 111.11
 DEFAULT_PID_KI = 2.78
 DEFAULT_PID_KD = 55.56
+DEFAULT_PID_KE = 0.0
 DEFAULT_PID_TARGET_TEMP = 167.0  # °F, a reasonable external-target starting point (= 75°C)
+DEFAULT_PID_OUTDOOR_TEMP_SENSOR = None
 # Applied when PID Mode is turned off — avoids leaving the miner stuck at the
 # last wattage the PID commanded. Defaults to power_max (full tilt).
 DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
@@ -95,6 +112,12 @@ DEFAULT_PID_SUPPLY_TEMP_LOCKOUT = 140.0  # °F (= 60°C)
 # sensor. Empty list disables the feature entirely. Recoverable: the loop
 # auto-resumes when any entity transitions back to "heating".
 DEFAULT_PID_DEMAND_ENTITIES: list[str] = []
+# Demand mode: "lockout" = binary (any heating = full power, none = power_min)
+#              "envelope" = continuous (scale output bounds by demand index)
+DEFAULT_PID_DEMAND_MODE = "lockout"
+DEFAULT_PID_DEMAND_FLOOR_FRAC = 0.0
+DEFAULT_PID_DEMAND_CEILING_FRAC = 1.0
+DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR = False
 # Integral is only frozen when |SP − PV| > this band AND the output has hit a
 # saturation rail (out_min/out_max). Outside the band but with actuator
 # headroom, integration continues — that's the disturbance-recovery case where
@@ -106,6 +129,9 @@ DEFAULT_PID_INTEGRAL_BAND = 5.4  # °F (= 3°C)
 # non-zero value turns a large SP change into a smooth ramp, which keeps the
 # integrator well-behaved on slow plants.
 DEFAULT_PID_SETPOINT_RAMP_RATE = 0.0
+DEFAULT_PID_WEATHER_ENTITY = None
+DEFAULT_PID_FORECAST_LOOKAHEAD_MIN = 60
+DEFAULT_PID_FORECAST_BLEND = 0.5
 
 # Units
 TERA_HASH_PER_SECOND = "TH/s"

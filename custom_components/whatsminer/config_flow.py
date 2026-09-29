@@ -178,15 +178,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Create the options flow."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for Whatsminer."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
+    def __init__(self) -> None:
+        """Initialize options flow.
+
+        HA (2024.11+) provides self.config_entry; assigning it raises on
+        2025.12+.
+        """
         self._current_data: dict[str, Any] = {}
 
     async def async_step_init(

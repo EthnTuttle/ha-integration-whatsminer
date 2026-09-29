@@ -12,3 +12,6 @@ CLAUDE.md
 .vscode/
 .DS_Store
 Thumbs.db
+
+# PID tuning captures (scripts/pid-capture.py output)
+pid-run-*.json

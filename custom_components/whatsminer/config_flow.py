@@ -514,61 +514,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=90)),
-vol.Optional(
+                    vol.Optional(
                         CONF_PID_SETPOINT_RAMP_RATE,
-                        default=current_data.get(
-                            CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
-                        ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=108)),
-                    vol.Optional(
-                        CONF_PID_PRICE_SENSOR,
-                        default=current_data.get(CONF_PID_PRICE_SENSOR),
-                    ): EntitySelector(
-                        EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Optional(
-                        CONF_PID_PRICE_HIGH,
-                        default=current_data.get(CONF_PID_PRICE_HIGH, 0.0),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-                    vol.Optional(
-                        CONF_PID_PRICE_LOW,
-                        default=current_data.get(CONF_PID_PRICE_LOW, 0.0),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-                    vol.Optional(
-                        CONF_PID_SURPLUS_SENSOR,
-                        default=current_data.get(CONF_PID_SURPLUS_SENSOR),
-                    ): EntitySelector(
-                        EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Optional(
-                        CONF_PID_SURPLUS_DEFICIT,
-                        default=current_data.get(CONF_PID_SURPLUS_DEFICIT, 0.0),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=-10000, max=10000)),
-                    vol.Optional(
-                        CONF_PID_SURPLUS_FULL,
-                        default=current_data.get(CONF_PID_SURPLUS_FULL, 0.0),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=-10000, max=10000)),
-                    vol.Optional(
-                        CONF_PID_WEATHER_ENTITY,
-                        default=current_data.get(CONF_PID_WEATHER_ENTITY, DEFAULT_PID_WEATHER_ENTITY),
-                    ): EntitySelector(
-                        EntitySelectorConfig(domain="weather")
-                    ),
-                    vol.Optional(
-                        CONF_PID_FORECAST_LOOKAHEAD_MIN,
-                        default=current_data.get(
-                            CONF_PID_FORECAST_LOOKAHEAD_MIN, DEFAULT_PID_FORECAST_LOOKAHEAD_MIN
-                        ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=360)),
-vol.Optional(
-                        CONF_PID_SETPOINT_RAMP_RATE,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=108)),
                     vol.Optional(
                         CONF_PID_SLOPE_EWMA_TAU_S,
-                        default=current_data.get(
+                        default=self._current_data.get(
                             CONF_PID_SLOPE_EWMA_TAU_S, DEFAULT_PID_SLOPE_EWMA_TAU_S
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=3600)),

@@ -111,7 +111,7 @@
       },
       "tuning": {
         "title": "Whatsminer Options: Tuning & Throttling",
-        "description": "Configure step bands, adjust intervals, integral band, and ramp rate.",
+        "description": "Configure step bands, adjust intervals, integral band, ramp rate, and slope smoothing.",
         "data": {
           "pid_min_power_step": "Coarse Step (watts)",
           "pid_min_power_step_medium": "Medium Step (watts)",
@@ -121,7 +121,8 @@
           "pid_min_adjust_interval": "Minimum Adjust Interval - Decrease (seconds)",
           "pid_min_adjust_interval_increase": "Minimum Adjust Interval - Increase (seconds)",
           "pid_integral_band": "Integral Band (°F)",
-          "pid_setpoint_ramp_rate": "Setpoint Ramp Rate (°F/min)"
+          "pid_setpoint_ramp_rate": "Setpoint Ramp Rate (°F/min)",
+          "pid_slope_ewma_tau_s": "Supply Slope Smoothing (seconds)"
         },
         "data_description": {
           "pid_min_power_step": "Minimum power step when far from setpoint (coarse)",
@@ -132,7 +133,8 @@
           "pid_min_adjust_interval": "Minimum seconds between power-decrease commands",
           "pid_min_adjust_interval_increase": "Minimum seconds between power-increase commands",
           "pid_integral_band": "Error band for conditional integral freeze (0 disables)",
-          "pid_setpoint_ramp_rate": "Max rate at which setpoint changes (0 disables ramping)"
+          "pid_setpoint_ramp_rate": "Max rate at which setpoint changes (0 disables ramping)",
+          "pid_slope_ewma_tau_s": "EWMA time constant for supply-temp slope used to refine step size (0 disables)"
         }
       }
     }

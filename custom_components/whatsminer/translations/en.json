@@ -36,22 +36,105 @@
   "options": {
     "step": {
       "init": {
-        "title": "Whatsminer Options",
-        "description": "Adjust settings for this Whatsminer.",
+        "title": "Whatsminer Options: Connection & PID Core",
+        "description": "Configure connection settings, power bounds, target temperature, and PID gains.",
         "data": {
           "password": "Password",
           "scan_interval": "Scan Interval (seconds)",
           "power_min": "Minimum Power Limit (watts)",
           "power_max": "Maximum Power Limit (watts)",
-          "pid_target_temp": "PID Target Temperature (°C)",
-          "pid_kp": "PID Kp (proportional, W/°C)",
+          "pid_target_temp": "PID Target Temperature (°F)",
+          "pid_kp": "PID Kp (proportional, W/°F)",
           "pid_ki": "PID Ki (integral)",
           "pid_kd": "PID Kd (derivative)",
-          "external_temp_sensor": "External Temperature Sensor (required for PID Mode)",
-          "default_power_limit": "Default Power Limit (W, applied when PID Mode turns off)",
-          "chip_temp_safety_cap": "Chip Temperature Safety Cap (°C, hard override clamps power to min)",
-          "pid_min_power_step": "PID Minimum Power Step (W, suppress commands smaller than this)",
-          "pid_min_adjust_interval": "PID Minimum Adjust Interval (seconds between power commands)"
+          "default_power_limit": "Default Power Limit (W, applied when PID Mode turns off)"
+        },
+        "data_description": {
+          "password": "The API password for the miner",
+          "scan_interval": "How often to poll the miner for updates (10-300 seconds)",
+          "power_min": "Minimum power limit for the power slider",
+          "power_max": "Maximum power limit for the power slider",
+          "pid_target_temp": "Target temperature for the PID controller (°F)",
+          "pid_kp": "Proportional gain - controls response to current error",
+          "pid_ki": "Integral gain - eliminates steady-state error",
+          "pid_kd": "Derivative gain - dampens overshoot",
+          "default_power_limit": "Power limit applied when PID Mode is disabled"
+        }
+      },
+      "safety": {
+        "title": "Whatsminer Options: Thermal Safety",
+        "description": "Configure chip and supply temperature safety caps and lockout thresholds.",
+        "data": {
+          "chip_temp_safety_cap": "Chip Temperature Safety Cap (°F)",
+          "pid_supply_temp_safety_cap": "Supply Temperature Safety Cap (°F)",
+          "pid_supply_temp_lockout": "Supply Temperature Lockout (°F)"
+        },
+        "data_description": {
+          "chip_temp_safety_cap": "Hard override clamps power to minimum when chip temp exceeds this threshold",
+          "pid_supply_temp_safety_cap": "Soft cap - forces power_min when supply temp exceeds this threshold",
+          "pid_supply_temp_lockout": "Hard lockout - stops mining when supply temp exceeds this threshold (requires manual reset)"
+        }
+      },
+      "demand": {
+        "title": "Whatsminer Options: Demand & Envelope",
+        "description": "Configure demand entities that control when the PID requests power.",
+        "data": {
+          "pid_demand_entities": "Demand Entities (climate devices)",
+          "pid_demand_mode": "Demand Mode",
+          "pid_demand_floor_frac": "Demand Floor Fraction",
+          "pid_demand_ceiling_frac": "Demand Ceiling Fraction",
+          "pid_demand_weight_by_error": "Weight by Temperature Error"
+        },
+        "data_description": {
+          "pid_demand_entities": "Climate entities to monitor for heating demand. When all are idle, power is clamped to minimum.",
+          "pid_demand_mode": "lockout = binary (no demand = power_min), envelope = continuous (scale output by demand)",
+          "pid_demand_floor_frac": "Minimum output fraction when demand index is 0 (envelope mode only)",
+          "pid_demand_ceiling_frac": "Maximum output fraction when demand index is 1 (envelope mode only)",
+          "pid_demand_weight_by_error": "Weight heating demand by how far below setpoint each zone is"
+        }
+      },
+      "feedforward": {
+        "title": "Whatsminer Options: Feedforward & Compensation",
+        "description": "Configure external temperature sensor and feedforward compensation.",
+        "data": {
+          "external_temp_sensor": "External Temperature Sensor"
+        },
+        "data_description": {
+          "external_temp_sensor": "Temperature sensor used as the PID process variable (required for PID Mode)"
+        }
+      },
+      "envelopes": {
+        "title": "Whatsminer Options: Price & Surplus",
+        "description": "Configure price and surplus envelope signals (for future expansion).",
+        "data": {},
+        "data_description": {}
+      },
+      "tuning": {
+        "title": "Whatsminer Options: Tuning & Throttling",
+        "description": "Configure step bands, adjust intervals, integral band, ramp rate, and slope smoothing.",
+        "data": {
+          "pid_min_power_step": "Coarse Step (watts)",
+          "pid_min_power_step_medium": "Medium Step (watts)",
+          "pid_min_power_step_fine": "Fine Step (watts)",
+          "pid_coarse_step_band": "Coarse Step Band (°F)",
+          "pid_fine_step_band": "Fine Step Band (°F)",
+          "pid_min_adjust_interval": "Minimum Adjust Interval - Decrease (seconds)",
+          "pid_min_adjust_interval_increase": "Minimum Adjust Interval - Increase (seconds)",
+          "pid_integral_band": "Integral Band (°F)",
+          "pid_setpoint_ramp_rate": "Setpoint Ramp Rate (°F/min)",
+          "pid_slope_ewma_tau_s": "Supply Slope Smoothing (seconds)"
+        },
+        "data_description": {
+          "pid_min_power_step": "Minimum power step when far from setpoint (coarse)",
+          "pid_min_power_step_medium": "Minimum power step when moderately close to setpoint",
+          "pid_min_power_step_fine": "Minimum power step when very close to setpoint (fine)",
+          "pid_coarse_step_band": "Error threshold for coarse step (far from setpoint)",
+          "pid_fine_step_band": "Error threshold for fine step (close to setpoint)",
+          "pid_min_adjust_interval": "Minimum seconds between power-decrease commands",
+          "pid_min_adjust_interval_increase": "Minimum seconds between power-increase commands",
+          "pid_integral_band": "Error band for conditional integral freeze (0 disables)",
+          "pid_setpoint_ramp_rate": "Max rate at which setpoint changes (0 disables ramping)",
+          "pid_slope_ewma_tau_s": "EWMA time constant for supply-temp slope used to refine step size (0 disables)"
         }
       }
     }

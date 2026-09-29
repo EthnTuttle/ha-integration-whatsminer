@@ -95,19 +95,43 @@
       },
       "feedforward": {
         "title": "Whatsminer Options: Feedforward & Compensation",
-        "description": "Configure external temperature sensor and feedforward compensation.",
+        "description": "Configure the PID process-variable sensor, outdoor temperature feedforward, and weather forecast blending.",
         "data": {
-          "external_temp_sensor": "External Temperature Sensor"
+          "external_temp_sensor": "External Temperature Sensor",
+          "pid_outdoor_temp_sensor": "Outdoor Temperature Sensor",
+          "pid_ke": "Outdoor Feedforward Ke (W/°F)",
+          "pid_weather_entity": "Weather Entity",
+          "pid_forecast_lookahead_min": "Forecast Lookahead (minutes)",
+          "pid_forecast_blend": "Forecast Blend (0-1)"
         },
         "data_description": {
-          "external_temp_sensor": "Temperature sensor used as the PID process variable (required for PID Mode)"
+          "external_temp_sensor": "Temperature sensor used as the PID process variable (required for PID Mode)",
+          "pid_outdoor_temp_sensor": "Optional. Outdoor temperature for feedforward; the weather entity's temperature is used when this is empty or unavailable",
+          "pid_ke": "Feedforward watts per °F of (setpoint − outdoor temperature); 0 disables",
+          "pid_weather_entity": "Optional. Supplies hourly forecasts for blending, and current outdoor temperature when no outdoor sensor is set",
+          "pid_forecast_lookahead_min": "How far ahead to read the hourly forecast (0 disables forecast blending)",
+          "pid_forecast_blend": "Weight of the forecast vs. current outdoor temperature (0 = current only, 1 = forecast only)"
         }
       },
       "envelopes": {
         "title": "Whatsminer Options: Price & Surplus",
-        "description": "Configure price and surplus envelope signals (for future expansion).",
-        "data": {},
-        "data_description": {}
+        "description": "Optionally limit maximum power by energy price and solar/battery surplus.",
+        "data": {
+          "pid_price_sensor": "Price Sensor",
+          "pid_price_high": "High Price",
+          "pid_price_low": "Low Price",
+          "pid_surplus_sensor": "Surplus Sensor",
+          "pid_surplus_deficit": "Surplus Deficit Point (W)",
+          "pid_surplus_full": "Surplus Full Point (W)"
+        },
+        "data_description": {
+          "pid_price_sensor": "Energy price sensor (e.g. $/kWh)",
+          "pid_price_high": "At or above this price, power is held at the minimum",
+          "pid_price_low": "At or below this price, the full power range is allowed",
+          "pid_surplus_sensor": "Excess power sensor (W, positive = surplus)",
+          "pid_surplus_deficit": "At or below this surplus, power is held at the minimum",
+          "pid_surplus_full": "At or above this surplus, the full power range is allowed"
+        }
       },
       "tuning": {
         "title": "Whatsminer Options: Tuning & Throttling",

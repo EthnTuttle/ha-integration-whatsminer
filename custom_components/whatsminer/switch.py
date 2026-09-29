@@ -735,7 +735,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._surplus_unavail_logged = False
         return value
 
-    def _blended_outdoor_temp(self, now: float) -> float | None:
+    async def _blended_outdoor_temp(self, now: float) -> float | None:
         """Return outdoor temp with optional forecast blend.
 
         If weather entity is configured, blends current outdoor temp with forecast
@@ -768,10 +768,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         else:
             cached_forecast = None
             try:
-                forecasts = self.hass.services.async_call(
+                forecasts = await self.hass.services.async_call(
                     "weather",
                     "get_forecasts",
-                    {"entity_id": self._weather_entity_id},
+                    {"entity_id": self._weather_entity_id, "type": "hourly"},
                     blocking=True,
                     return_response=True,
                 )
@@ -790,29 +790,29 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                     best_forecast = None
                     for entry in forecast_list:
                         forecast_time = entry.get("datetime")
-                        if forecast_time:
-                            if isinstance(forecast_time, str):
-                                from datetime import datetime
-                                try:
-                                    forecast_time = datetime.fromisoformat(
-                                        forecast_time.replace("Z", "+00:00")
-                                    ).timestamp()
-                                except Exception:
-                                    continue
-                            if forecast_time >= target_time:
-                                best_forecast = entry
-                                break
+                        if isinstance(forecast_time, str):
+                            try:
+                                forecast_time = datetime.fromisoformat(
+                                    forecast_time.replace("Z", "+00:00")
+                                ).timestamp()
+                            except ValueError:
+                                continue
+                        elif isinstance(forecast_time, datetime):
+                            forecast_time = forecast_time.timestamp()
+                        else:
+                            continue
+                        if forecast_time >= target_time:
+                            best_forecast = entry
+                            break
                     if best_forecast:
                         temp = best_forecast.get("temperature")
                         if temp is not None:
-                            unit = best_forecast.get("temperature_unit")
-                            if unit and unit != UnitOfTemperature.FAHRENHEIT:
-                                try:
-                                    temp = TemperatureConverter.convert(
-                                        temp, unit, UnitOfTemperature.FAHRENHEIT
-                                    )
-                                except Exception:
-                                    pass
+                            # Forecast temperatures are in HA's configured unit system.
+                            unit = self.hass.config.units.temperature_unit
+                            if unit != UnitOfTemperature.FAHRENHEIT:
+                                temp = TemperatureConverter.convert(
+                                    float(temp), unit, UnitOfTemperature.FAHRENHEIT
+                                )
                             cached_forecast = float(temp)
             if cached_forecast is not None:
                 self._forecast_cache = cached_forecast
@@ -970,7 +970,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # Uses blended forecast temperature when weather entity is configured.
         outdoor_temp = None
         if self._outdoor_temp_sensor_id is not None and self._ke > 0:
-            outdoor_temp = self._blended_outdoor_temp(now)
+            outdoor_temp = await self._blended_outdoor_temp(now)
 
         # Envelope mode: apply demand-scaled output bounds before calc() so the
         # integrator sees the real operating range. Lockout mode uses binary

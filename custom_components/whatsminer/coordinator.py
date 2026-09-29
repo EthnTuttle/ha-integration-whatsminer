@@ -9,7 +9,6 @@ import json
 import logging
 import re
 from datetime import timedelta, datetime
-from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
@@ -385,6 +384,9 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         self.port = port
         self.api = WhatsminerAPI(ip, port, password)
         self._failure_count = 0
+        # Last MAC read from get_miner_info; keeps unique_ids stable if that
+        # one command fails on a later poll.
+        self._mac: str | None = None
         
         super().__init__(
             hass=hass,
@@ -526,47 +528,60 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         return hashboards
 
     async def _async_update_data(self) -> dict:
-        """Fetch data from miner."""
+        """Fetch data from miner.
+
+        Raises UpdateFailed on any failure so entities go unavailable rather
+        than reporting zeros (which polluted history and share counters).
+        DataUpdateCoordinator logs the offline and recovery transitions once.
+        """
+        _LOGGER.debug(f"Fetching data from {self.miner_ip}")
+
+        # Fetch all data in parallel
+        summary_data, miner_info_data, devs_data, pools_data = await asyncio.gather(
+            self.api.get_summary(),
+            self.api.get_miner_info(),
+            self.api.get_devs(),
+            self.api.get_pools(),
+            return_exceptions=True
+        )
+        for result in (summary_data, miner_info_data, devs_data, pools_data):
+            if isinstance(result, Exception):
+                _LOGGER.debug(f"Request to {self.miner_ip} raised: {result!r}")
+
+        def _ok(x):
+            return x is not None and not isinstance(x, Exception)
+
+        if not _ok(summary_data):
+            self._failure_count += 1
+            raise UpdateFailed(f"Miner at {self.miner_ip} is unreachable")
+
         try:
-            _LOGGER.debug(f"Fetching data from {self.miner_ip}")
-            
-            # Fetch all data in parallel
-            summary_data, miner_info_data, devs_data, pools_data = await asyncio.gather(
-                self.api.get_summary(),
-                self.api.get_miner_info(),
-                self.api.get_devs(),
-                self.api.get_pools(),
-                return_exceptions=True
-            )
-
-            # Check if all requests failed
-            if all(x is None or isinstance(x, Exception) for x in [summary_data, miner_info_data, devs_data, pools_data]):
-                self._failure_count += 1
-
-                if self._failure_count == 1:
-                    _LOGGER.warning(f"Miner at {self.miner_ip} is offline - returning zeroed data")
-                    return DEFAULT_DATA.copy()
-
-                raise UpdateFailed(f"Miner at {self.miner_ip} is offline")
-
-            # Parse responses
             data = DEFAULT_DATA.copy()
             data["ip"] = self.miner_ip
-            data["mac"] = f"whatsminer_{self.miner_ip.replace('.', '_')}"
 
-            if miner_info_data and not isinstance(miner_info_data, Exception):
+            if _ok(miner_info_data):
                 info = self._parse_miner_info(miner_info_data)
                 if info.get("mac"):
-                    data.update(info)
+                    self._mac = info["mac"]
+                data.update({k: v for k, v in info.items() if v})
 
-            if summary_data and not isinstance(summary_data, Exception):
-                data.update(self._parse_summary(summary_data))
+            # Entity unique_ids derive from the MAC, so never hand out data
+            # without the real one: an IP-based fallback would spawn a
+            # duplicate set of entities.
+            if self._mac is None:
+                self._failure_count += 1
+                raise UpdateFailed(
+                    f"Could not read MAC address from miner at {self.miner_ip}"
+                )
+            data["mac"] = self._mac
 
-            if devs_data and not isinstance(devs_data, Exception):
+            data.update(self._parse_summary(summary_data))
+
+            if _ok(devs_data):
                 data["hashboards"] = self._parse_devs(devs_data)
 
             # Accepted/Rejected: prefer pools aggregation (new firmware), fall back to summary
-            if pools_data and not isinstance(pools_data, Exception):
+            if _ok(pools_data):
                 pool_stats = self._parse_pools(pools_data)
                 if pool_stats.get("accepted") is not None:
                     data["accepted"] = pool_stats["accepted"]
@@ -577,34 +592,29 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
                 data["accepted"] = 0
             if data.get("rejected") is None:
                 data["rejected"] = 0
-
-            # Reset failure count on success
-            self._failure_count = 0
-            
-            _LOGGER.debug(
-                f"Got data from {self.miner_ip}: "
-                f"hashrate={data.get('hashrate', 0):.2f} TH/s, "
-                f"expected={data.get('expected_hashrate', 0):.2f} TH/s, "
-                f"temp={data.get('temperature_avg', 0):.1f}°F, "
-                f"power={data.get('wattage', 0)}W, "
-                f"limit={data.get('wattage_limit', 0)}W, "
-                f"efficiency={data.get('efficiency', 0):.2f} J/TH, "
-                f"mining={data.get('is_mining', False)}"
-            )
-            
-            return data
-            
+        except UpdateFailed:
+            raise
         except Exception as err:
             self._failure_count += 1
-            
-            if self._failure_count == 1:
-                _LOGGER.warning(f"Error fetching data from {self.miner_ip}: {err}")
-                return DEFAULT_DATA.copy()
-            
-            _LOGGER.exception(f"Failed to fetch data from {self.miner_ip}")
-            raise UpdateFailed(f"Error communicating with miner: {err}")
+            _LOGGER.exception(f"Failed to parse data from {self.miner_ip}")
+            raise UpdateFailed(f"Error parsing miner data: {err}") from err
+
+        self._failure_count = 0
+
+        _LOGGER.debug(
+            f"Got data from {self.miner_ip}: "
+            f"hashrate={data.get('hashrate', 0):.2f} TH/s, "
+            f"expected={data.get('expected_hashrate', 0):.2f} TH/s, "
+            f"temp={data.get('temperature_avg', 0):.1f}°F, "
+            f"power={data.get('wattage', 0)}W, "
+            f"limit={data.get('wattage_limit', 0)}W, "
+            f"efficiency={data.get('efficiency', 0):.2f} J/TH, "
+            f"mining={data.get('is_mining', False)}"
+        )
+
+        return data
 
     @property
     def available(self) -> bool:
         """Return if miner is available."""
-        return self._failure_count < 2
+        return self._failure_count == 0

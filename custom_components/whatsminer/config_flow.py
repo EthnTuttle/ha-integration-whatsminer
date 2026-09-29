@@ -195,6 +195,19 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """
         self._current_data: dict[str, Any] = {}
 
+    def _update_current(
+        self, user_input: dict[str, Any], clearable: tuple[str, ...] = ()
+    ) -> None:
+        """Merge a step's input, dropping cleared optional entity pickers.
+
+        Pickers pre-filled via suggested_value are omitted from user_input
+        when the user clears them; without this the old entity would stick.
+        """
+        for key in clearable:
+            if key not in user_input:
+                self._current_data.pop(key, None)
+        self._current_data.update(user_input)
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -342,7 +355,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Step 4: Outdoor sensor, Ke, weather + forecast."""
         if user_input is not None:
-            self._current_data.update(user_input)
+            self._update_current(
+                user_input, (CONF_PID_OUTDOOR_TEMP_SENSOR, CONF_PID_WEATHER_ENTITY)
+            )
             return await self.async_step_envelopes()
 
         return self.async_show_form(
@@ -424,7 +439,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Step 5: Price, surplus (Time-of-Use / Solar / Battery Envelopes)."""
         if user_input is not None:
-            self._current_data.update(user_input)
+            self._update_current(
+                user_input, (CONF_PID_PRICE_SENSOR, CONF_PID_SURPLUS_SENSOR)
+            )
             return await self.async_step_tuning()
 
         return self.async_show_form(

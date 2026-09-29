@@ -53,6 +53,7 @@ CONF_PID_SURPLUS_FULL = "pid_surplus_full"
 CONF_PID_WEATHER_ENTITY = "pid_weather_entity"
 CONF_PID_FORECAST_LOOKAHEAD_MIN = "pid_forecast_lookahead_min"
 CONF_PID_FORECAST_BLEND = "pid_forecast_blend"
+CONF_PID_SLOPE_EWMA_TAU_S = "pid_slope_ewma_tau_s"
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -132,6 +133,9 @@ DEFAULT_PID_SETPOINT_RAMP_RATE = 0.0
 DEFAULT_PID_WEATHER_ENTITY = None
 DEFAULT_PID_FORECAST_LOOKAHEAD_MIN = 60
 DEFAULT_PID_FORECAST_BLEND = 0.5
+# Time constant (seconds) of the supply-temp slope EWMA used to bias the
+# step-band classifier. 0 disables slope smoothing entirely.
+DEFAULT_PID_SLOPE_EWMA_TAU_S = 0.0
 
 # Units
 TERA_HASH_PER_SECOND = "TH/s"

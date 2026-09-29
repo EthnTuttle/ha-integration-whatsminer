@@ -383,6 +383,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._demand_ceiling_frac = float(demand_ceiling_frac)
         self._demand_weight_by_error = bool(demand_weight_by_error)
         self._no_demand_logged = False
+        self._demand_unavail_logged = False
         self._integral_band = float(integral_band)
         self._setpoint_ramp_rate = float(setpoint_ramp_rate)
         self._slope_ewma_tau_s = float(slope_ewma_tau_s)
@@ -839,8 +840,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         """Return demand index (0.0-1.0) based on configured climate entities.
 
         Used to scale PID output bounds. Returns:
-          None  — feature disabled (no demand entities configured).
-          0.0   — no heating demand (all idle/off/unavailable).
+          None  — unknown: feature disabled, or every entity unavailable.
+                  Thermostats are an advisory input, so losing them must not
+                  force power_min; the supply probe remains the authority.
+          0.0   — no heating demand (all reporting entities idle/off).
           1.0   — full heating demand.
           float — weighted average across known entities.
         """
@@ -873,11 +876,17 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             elif not self._demand_weight_by_error and action != "heating":
                 weights.append(0.0)
         if not weights:
-            _LOGGER.warning(
-                "All demand entities (%s) are unavailable — failing safe to no-demand",
-                ", ".join(self._demand_entities),
-            )
-            return 0.0
+            if not self._demand_unavail_logged:
+                _LOGGER.warning(
+                    "All demand entities (%s) are unavailable — ignoring demand "
+                    "until one reports",
+                    ", ".join(self._demand_entities),
+                )
+                self._demand_unavail_logged = True
+            return None
+        if self._demand_unavail_logged:
+            _LOGGER.info("Demand entities reporting again")
+            self._demand_unavail_logged = False
         return sum(weights) / len(weights)
 
     def _effective_out_min(self) -> float:
@@ -1100,7 +1109,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # the output bounds are already scaled before calc().
         demand_index = self._demand_index()
         if self._demand_mode == "lockout" and self._demand_entities:
-            if demand_index == 0.0 or demand_index is None:
+            if demand_index == 0.0:
                 new_power = self._power_min
                 safety_engaged = True
                 if not self._no_demand_logged:

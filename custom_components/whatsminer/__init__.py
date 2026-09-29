@@ -9,48 +9,19 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
-    CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_PID_COARSE_STEP_BAND,
-    CONF_PID_DEMAND_ENTITIES,
-    CONF_PID_DEMAND_MODE,
-    CONF_PID_DEMAND_FLOOR_FRAC,
-    CONF_PID_DEMAND_CEILING_FRAC,
-    CONF_PID_DEMAND_WEIGHT_BY_ERROR,
     CONF_PID_FINE_STEP_BAND,
     CONF_PID_INTEGRAL_BAND,
     CONF_PID_KD,
-    CONF_PID_KE,
     CONF_PID_KI,
     CONF_PID_KP,
-    CONF_PID_MIN_ADJUST_INTERVAL,
-    CONF_PID_MIN_POWER_STEP,
-    CONF_PID_OUTDOOR_TEMP_SENSOR,
     CONF_PID_SETPOINT_RAMP_RATE,
     CONF_PID_SUPPLY_TEMP_LOCKOUT,
     CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_TARGET_TEMP,
-    CONF_POWER_MAX,
-    CONF_POWER_MIN,
-    DEFAULT_CHIP_TEMP_SAFETY_CAP,
-    DEFAULT_DEFAULT_POWER_LIMIT,
     DEFAULT_PASSWORD,
-    DEFAULT_PID_KD,
-    DEFAULT_PID_KE,
-    DEFAULT_PID_KI,
-    DEFAULT_PID_KP,
-    DEFAULT_PID_DEMAND_ENTITIES,
-    DEFAULT_PID_DEMAND_MODE,
-    DEFAULT_PID_DEMAND_FLOOR_FRAC,
-    DEFAULT_PID_DEMAND_CEILING_FRAC,
-    DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR,
-    DEFAULT_PID_MIN_ADJUST_INTERVAL,
-    DEFAULT_PID_MIN_POWER_STEP,
-    DEFAULT_PID_OUTDOOR_TEMP_SENSOR,
-    DEFAULT_PID_TARGET_TEMP,
     DEFAULT_PORT,
-    DEFAULT_POWER_MAX,
-    DEFAULT_POWER_MIN,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
@@ -106,45 +77,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # sensors (readers) so both platforms see the same numbers on each tick.
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": coordinator,
-"config": {
-            CONF_POWER_MIN: _opt(CONF_POWER_MIN, DEFAULT_POWER_MIN),
-            CONF_POWER_MAX: _opt(CONF_POWER_MAX, DEFAULT_POWER_MAX),
-            CONF_PID_KP: _opt(CONF_PID_KP, DEFAULT_PID_KP),
-            CONF_PID_KI: _opt(CONF_PID_KI, DEFAULT_PID_KI),
-            CONF_PID_KD: _opt(CONF_PID_KD, DEFAULT_PID_KD),
-            CONF_PID_KE: _opt(CONF_PID_KE, DEFAULT_PID_KE),
-            CONF_PID_TARGET_TEMP: _opt(CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP),
-            CONF_EXTERNAL_TEMP_SENSOR: _opt(CONF_EXTERNAL_TEMP_SENSOR, None),
-            CONF_PID_OUTDOOR_TEMP_SENSOR: _opt(CONF_PID_OUTDOOR_TEMP_SENSOR, DEFAULT_PID_OUTDOOR_TEMP_SENSOR),
-            CONF_DEFAULT_POWER_LIMIT: _opt(
-                CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
-            ),
-            CONF_PID_MIN_POWER_STEP: _opt(
-                CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
-            ),
-            CONF_PID_MIN_ADJUST_INTERVAL: _opt(
-                CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
-            ),
-            CONF_CHIP_TEMP_SAFETY_CAP: _opt(
-                CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
-            ),
-            CONF_PID_DEMAND_ENTITIES: _opt(
-                CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
-            ),
-            CONF_PID_DEMAND_MODE: _opt(
-                CONF_PID_DEMAND_MODE, DEFAULT_PID_DEMAND_MODE
-            ),
-            CONF_PID_DEMAND_FLOOR_FRAC: _opt(
-                CONF_PID_DEMAND_FLOOR_FRAC, DEFAULT_PID_DEMAND_FLOOR_FRAC
-            ),
-            CONF_PID_DEMAND_CEILING_FRAC: _opt(
-                CONF_PID_DEMAND_CEILING_FRAC, DEFAULT_PID_DEMAND_CEILING_FRAC
-            ),
-            CONF_PID_DEMAND_WEIGHT_BY_ERROR: _opt(
-                CONF_PID_DEMAND_WEIGHT_BY_ERROR, DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR
-            ),
-        },
-"pid_state": {
+        # Options override initial setup data; consumers apply their own defaults.
+        "config": {**entry.data, **entry.options},
+        "pid_state": {
             "error": None,
             "proportional": None,
             "integral": None,

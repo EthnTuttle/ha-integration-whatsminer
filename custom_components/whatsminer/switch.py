@@ -34,6 +34,8 @@ from .const import (
     CONF_PID_DEMAND_FLOOR_FRAC,
     CONF_PID_DEMAND_CEILING_FRAC,
     CONF_PID_DEMAND_WEIGHT_BY_ERROR,
+    CONF_PID_FALLBACK_OUTDOOR_COLD,
+    CONF_PID_FALLBACK_OUTDOOR_WARM,
     CONF_PID_FINE_STEP_BAND,
     CONF_PID_MIN_ADJUST_INTERVAL,
     CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
@@ -70,6 +72,8 @@ from .const import (
     DEFAULT_PID_DEMAND_FLOOR_FRAC,
     DEFAULT_PID_DEMAND_CEILING_FRAC,
     DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR,
+    DEFAULT_PID_FALLBACK_OUTDOOR_COLD,
+    DEFAULT_PID_FALLBACK_OUTDOOR_WARM,
     DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_MIN_ADJUST_INTERVAL,
     DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
@@ -195,6 +199,12 @@ async def async_setup_entry(
         ),
         forecast_blend=config.get(
             CONF_PID_FORECAST_BLEND, DEFAULT_PID_FORECAST_BLEND
+        ),
+        fallback_outdoor_cold=config.get(
+            CONF_PID_FALLBACK_OUTDOOR_COLD, DEFAULT_PID_FALLBACK_OUTDOOR_COLD
+        ),
+        fallback_outdoor_warm=config.get(
+            CONF_PID_FALLBACK_OUTDOOR_WARM, DEFAULT_PID_FALLBACK_OUTDOOR_WARM
         ),
     )
     # The reset button calls back into the PID switch, which owns the latch.
@@ -364,6 +374,8 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         weather_entity_id: str | None = None,
         forecast_lookahead_min: int = DEFAULT_PID_FORECAST_LOOKAHEAD_MIN,
         forecast_blend: float = DEFAULT_PID_FORECAST_BLEND,
+        fallback_outdoor_cold: float = DEFAULT_PID_FALLBACK_OUTDOOR_COLD,
+        fallback_outdoor_warm: float = DEFAULT_PID_FALLBACK_OUTDOOR_WARM,
     ) -> None:
         """Initialize the PID switch."""
         super().__init__(coordinator)
@@ -415,6 +427,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._forecast_blend = float(forecast_blend)
         self._forecast_cache: float | None = None
         self._forecast_cache_time: float | None = None
+        # Probe-loss fallback (outdoor-reset curve) parameters and state
+        self._fallback_outdoor_cold = float(fallback_outdoor_cold)
+        self._fallback_outdoor_warm = float(fallback_outdoor_warm)
+        self._in_fallback = False
         # Effective (possibly ramped) setpoint the PID actually sees. None until
         # the first tick seeds it from the current PV.
         self._ramped_target: float | None = None
@@ -499,7 +515,16 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose the lockout latch; also how it survives restarts (RestoreEntity)."""
-        return {"supply_lockout_latched": bool(self._pid_state.get("lockout_latched"))}
+        if not self._pid_state.get("enabled"):
+            control = "off"
+        elif self._in_fallback:
+            control = "fallback"
+        else:
+            control = "pid"
+        return {
+            "supply_lockout_latched": bool(self._pid_state.get("lockout_latched")),
+            "control_mode": control,
+        }
 
     async def async_reset_lockout(self) -> None:
         """Clear the supply lockout latch once the loop has cooled.
@@ -569,6 +594,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         self._pid.clear_samples()
         self._last_input_time = None
         self._manual_safety_active = False
+        self._in_fallback = False
         # Clear so the first PID tick after enable isn't blocked by a throttle
         # timer carried over from a prior PID-on session.
         self._last_command_time = 0.0
@@ -822,7 +848,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
             if not self._external_unavail_logged:
                 _LOGGER.warning(
-                    "External temp sensor %s unavailable — PID will pause until it returns",
+                    "External temp sensor %s unavailable — PID falls back to outdoor temp/demand until it returns",
                     self._external_sensor_id,
                 )
                 self._external_unavail_logged = True
@@ -1153,6 +1179,90 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return float(self._power_max)
         return float(self._power_min) + (float(self._power_max) - float(self._power_min)) * (1.0 - (1.0 - self._demand_ceiling_frac) * (1.0 - index))
 
+    def _fallback_power(self) -> tuple[int | None, str]:
+        """Open-loop power for when the supply probe is unavailable.
+
+        Returns (watts, basis); watts is None when there's nothing to go on,
+        meaning hold the current limit.
+        """
+        demand = self._demand_index()
+        if self._demand_mode == "lockout" and demand == 0.0:
+            return self._power_min, "no thermostat demand"
+        outdoor = self._read_outdoor_fahrenheit()
+        if outdoor is None or self._fallback_outdoor_warm <= self._fallback_outdoor_cold:
+            return None, "no outdoor temperature"
+        frac = (self._fallback_outdoor_warm - outdoor) / (
+            self._fallback_outdoor_warm - self._fallback_outdoor_cold
+        )
+        frac = max(0.0, min(1.0, frac))
+        lo, hi = self._effective_out_min(), self._effective_out_max()
+        basis = f"outdoor {outdoor:.1f}°F"
+        if demand is not None:
+            basis += f", demand {demand:.2f}"
+        return int(round(lo + (hi - lo) * frac)), basis
+
+    async def _run_fallback_step(self, caps: frozenset[str]) -> None:
+        """PID Mode with the supply probe unavailable.
+
+        Dropping to power_min on a probe glitch would leave the house cold,
+        so run open-loop on outdoor temp and thermostat demand instead.
+        Safety caps (chip temp) still force power_min.
+        """
+        if not self._in_fallback:
+            self._in_fallback = True
+            _LOGGER.warning(
+                "Supply probe %s unavailable — running on outdoor temperature and "
+                "thermostat demand until it returns",
+                self._external_sensor_id,
+            )
+        target, basis = self._fallback_power()
+        current_limit = self.coordinator.data.get("wattage_limit") or 0
+        reference = (
+            self._last_commanded_power
+            if self._last_commanded_power is not None
+            else current_limit
+        )
+        requested = target if target is not None else reference
+        new_power = self._power_min if caps else requested
+        demand_lockout = basis == "no thermostat demand"
+        self._pid_state.update(
+            {
+                "error": None,
+                "proportional": None,
+                "integral": None,
+                "derivative": None,
+                "external": None,
+                "requested_output": requested,
+                "output": reference,
+                "safety_engaged": bool(caps) or demand_lockout,
+                "demand_index": self._demand_index(),
+            }
+        )
+
+        # Same actuation gate as the PID path, at the coarse step size.
+        delta = abs(new_power - reference)
+        interval = (
+            self._min_adjust_interval_increase
+            if new_power > reference
+            else self._min_adjust_interval
+        )
+        interval_ok = time() - self._last_command_time >= interval
+        if delta < self._min_power_step or not (interval_ok or caps):
+            return
+        _LOGGER.info(
+            "Fallback (%s): power %dW (was %dW)",
+            "safety cap" if caps else basis,
+            new_power,
+            reference,
+        )
+        try:
+            await self.coordinator.api.set_power_limit(new_power)
+            self._last_commanded_power = new_power
+            self._last_command_time = time()
+            self._pid_state["output"] = new_power
+        except Exception as err:
+            _LOGGER.error("Failed to set power limit to %dW: %s", new_power, err)
+
     async def _run_pid_step(self, temp: float | None, caps: frozenset[str]) -> None:
         """Compute PID output and push to the miner if it changed meaningfully.
 
@@ -1160,9 +1270,20 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         engaged safety caps, which force power_min.
         """
         if temp is None:
-            # Probe unavailable: PID paused, but safety caps still enforced.
-            await self._apply_manual_safety(caps)
+            await self._run_fallback_step(caps)
             return
+        if self._in_fallback:
+            # Probe is back: re-seed from the limit the fallback left us at.
+            self._in_fallback = False
+            self._pid.clear_samples()
+            self._last_input_time = None
+            self._ramped_target = None
+            seeded = self._seed_bumpless_transfer()
+            _LOGGER.info(
+                "Supply probe %s is back — resuming PID from ≈%dW",
+                self._external_sensor_id,
+                seeded,
+            )
 
         now = time()
         if self._slope_last_pv is not None and self._slope_ewma_tau_s > 0:

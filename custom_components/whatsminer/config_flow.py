@@ -32,6 +32,8 @@ from .const import (
     CONF_PID_DEMAND_FLOOR_FRAC,
     CONF_PID_DEMAND_CEILING_FRAC,
     CONF_PID_DEMAND_WEIGHT_BY_ERROR,
+    CONF_PID_FALLBACK_OUTDOOR_COLD,
+    CONF_PID_FALLBACK_OUTDOOR_WARM,
     CONF_PID_FORECAST_BLEND,
     CONF_PID_FORECAST_LOOKAHEAD_MIN,
     CONF_PID_FINE_STEP_BAND,
@@ -69,6 +71,8 @@ from .const import (
     DEFAULT_PID_DEMAND_FLOOR_FRAC,
     DEFAULT_PID_DEMAND_CEILING_FRAC,
     DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR,
+    DEFAULT_PID_FALLBACK_OUTDOOR_COLD,
+    DEFAULT_PID_FALLBACK_OUTDOOR_WARM,
     DEFAULT_PID_FINE_STEP_BAND,
     DEFAULT_PID_FORECAST_BLEND,
     DEFAULT_PID_FORECAST_LOOKAHEAD_MIN,
@@ -398,6 +402,20 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             DEFAULT_PID_FORECAST_BLEND,
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+                    vol.Optional(
+                        CONF_PID_FALLBACK_OUTDOOR_COLD,
+                        default=self._current_data.get(
+                            CONF_PID_FALLBACK_OUTDOOR_COLD,
+                            DEFAULT_PID_FALLBACK_OUTDOOR_COLD,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-40, max=100)),
+                    vol.Optional(
+                        CONF_PID_FALLBACK_OUTDOOR_WARM,
+                        default=self._current_data.get(
+                            CONF_PID_FALLBACK_OUTDOOR_WARM,
+                            DEFAULT_PID_FALLBACK_OUTDOOR_WARM,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-40, max=100)),
                 }
             ),
         )

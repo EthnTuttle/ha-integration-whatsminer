@@ -55,6 +55,8 @@ CONF_PID_WEATHER_ENTITY = "pid_weather_entity"
 CONF_PID_FORECAST_LOOKAHEAD_MIN = "pid_forecast_lookahead_min"
 CONF_PID_FORECAST_BLEND = "pid_forecast_blend"
 CONF_PID_SLOPE_EWMA_TAU_S = "pid_slope_ewma_tau_s"
+CONF_PID_FALLBACK_OUTDOOR_COLD = "pid_fallback_outdoor_cold"
+CONF_PID_FALLBACK_OUTDOOR_WARM = "pid_fallback_outdoor_warm"
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -137,6 +139,13 @@ DEFAULT_PID_FORECAST_BLEND = 0.5
 # Time constant (seconds) of the supply-temp slope EWMA used to bias the
 # step-band classifier. 0 disables slope smoothing entirely.
 DEFAULT_PID_SLOPE_EWMA_TAU_S = 0.0
+# Probe-loss fallback: if the supply probe drops out while PID Mode is on, run
+# open-loop on an outdoor-reset curve instead of dropping to power_min —
+# power_max at/below COLD, power_min at/above WARM, linear between. Thermostat
+# demand still gates it (all idle → power_min in lockout mode; envelope mode
+# scales the bounds). With no outdoor reading the current limit is held.
+DEFAULT_PID_FALLBACK_OUTDOOR_COLD = 10.0  # °F
+DEFAULT_PID_FALLBACK_OUTDOOR_WARM = 60.0  # °F
 
 # Units
 TERA_HASH_PER_SECOND = "TH/s"

@@ -95,14 +95,16 @@
       },
       "feedforward": {
         "title": "Whatsminer Options: Feedforward & Compensation",
-        "description": "Configure the PID process-variable sensor, outdoor temperature feedforward, and weather forecast blending.",
+        "description": "Configure the PID process-variable sensor, outdoor temperature feedforward, and weather forecast blending. The outdoor-reset curve below drives power if the process-variable sensor becomes unavailable while PID Mode is on.",
         "data": {
           "external_temp_sensor": "External Temperature Sensor",
           "pid_outdoor_temp_sensor": "Outdoor Temperature Sensor",
           "pid_ke": "Outdoor Feedforward Ke (W/°F)",
           "pid_weather_entity": "Weather Entity",
           "pid_forecast_lookahead_min": "Forecast Lookahead (minutes)",
-          "pid_forecast_blend": "Forecast Blend (0-1)"
+          "pid_forecast_blend": "Forecast Blend (0-1)",
+          "pid_fallback_outdoor_cold": "Fallback: Full Power At (°F outdoor)",
+          "pid_fallback_outdoor_warm": "Fallback: Minimum Power At (°F outdoor)"
         },
         "data_description": {
           "external_temp_sensor": "Temperature sensor used as the PID process variable (required for PID Mode)",
@@ -110,7 +112,9 @@
           "pid_ke": "Feedforward watts per °F of (setpoint − outdoor temperature); 0 disables",
           "pid_weather_entity": "Optional. Supplies hourly forecasts for blending, and current outdoor temperature when no outdoor sensor is set",
           "pid_forecast_lookahead_min": "How far ahead to read the hourly forecast (0 disables forecast blending)",
-          "pid_forecast_blend": "Weight of the forecast vs. current outdoor temperature (0 = current only, 1 = forecast only)"
+          "pid_forecast_blend": "Weight of the forecast vs. current outdoor temperature (0 = current only, 1 = forecast only)",
+          "pid_fallback_outdoor_cold": "If the supply probe drops out, run at maximum power when it is this cold or colder outside",
+          "pid_fallback_outdoor_warm": "If the supply probe drops out, run at minimum power when it is this warm or warmer outside (linear in between; thermostat demand still applies)"
         }
       },
       "envelopes": {

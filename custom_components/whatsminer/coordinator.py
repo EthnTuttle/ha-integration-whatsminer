@@ -98,33 +98,33 @@ class WhatsminerAPI:
             timeout=timeout
         )
         
-        _LOGGER.debug(f"Sending to {self.host}: {message[:200]}")
-        writer.write(message.encode('utf-8'))
-        await writer.drain()
-        
-        # Read response - read until connection closes or we get enough data
-        chunks = []
         try:
-            while True:
-                chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                # If we got a complete JSON response, we can stop
-                data = b''.join(chunks)
-                try:
-                    # Try to parse - if it works, we have complete data
-                    data.decode('utf-8', errors='ignore').strip().replace('\x00', '')
+            _LOGGER.debug(f"Sending to {self.host}: {message[:200]}")
+            writer.write(message.encode('utf-8'))
+            await writer.drain()
+
+            # Read response - read until connection closes or we get enough data
+            chunks = []
+            try:
+                while True:
+                    chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    # Stop once the response looks like a complete JSON object
+                    data = b''.join(chunks)
                     if data.endswith(b'}') or data.endswith(b'}\x00'):
                         break
-                except:
-                    pass
-        except asyncio.TimeoutError:
-            pass  # Timeout is expected when done reading
-        
-        writer.close()
-        await writer.wait_closed()
-        
+            except asyncio.TimeoutError:
+                pass  # Timeout is expected when done reading
+        finally:
+            # Always release the socket, even if write/drain/read raised
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
         return b''.join(chunks)
 
     async def send_command(self, cmd: str, timeout: int = 5) -> dict | None:
@@ -146,14 +146,13 @@ class WhatsminerAPI:
             
             return json.loads(response_str)
             
-        except asyncio.TimeoutError:
-            _LOGGER.error(f"Timeout connecting to {self.host}:{self.port}")
-            return None
-        except ConnectionRefusedError:
-            _LOGGER.error(f"Connection refused to {self.host}:{self.port}")
+        except (asyncio.TimeoutError, OSError) as err:
+            # Network-level failures are expected when the miner is off or
+            # unreachable; the coordinator logs the offline transition once.
+            _LOGGER.debug(f"{cmd} to {self.host}:{self.port} failed: {err!r}")
             return None
         except json.JSONDecodeError as err:
-            _LOGGER.error(f"Invalid JSON response from {self.host}: {err}")
+            _LOGGER.warning(f"Invalid JSON response from {self.host}: {err}")
             return None
         except Exception as err:
             _LOGGER.exception(f"Error communicating with {self.host}: {err}")

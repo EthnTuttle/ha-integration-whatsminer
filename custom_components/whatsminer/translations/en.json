@@ -71,8 +71,8 @@
         },
         "data_description": {
           "chip_temp_safety_cap": "Hard override clamps power to minimum when chip temp exceeds this threshold",
-          "pid_supply_temp_safety_cap": "Soft cap - forces power_min when supply temp exceeds this threshold",
-          "pid_supply_temp_lockout": "Hard lockout - stops mining when supply temp exceeds this threshold (requires manual reset)"
+          "pid_supply_temp_safety_cap": "Soft cap - forces power_min when supply temp exceeds this threshold, whether or not PID Mode is on",
+          "pid_supply_temp_lockout": "Hard lockout - stops mining when supply temp exceeds this threshold. Latched across restarts until Reset Supply Lockout is pressed with the supply below the safety cap"
         }
       },
       "demand": {

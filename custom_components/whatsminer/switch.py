@@ -1,6 +1,7 @@
 """Support for Whatsminer switches."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from datetime import datetime, timedelta
@@ -80,7 +81,6 @@ from .const import (
     DEFAULT_PID_SUPPLY_TEMP_LOCKOUT,
     DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP,
     DEFAULT_PID_TARGET_TEMP,
-    DEFAULT_PID_WEATHER_ENTITY,
     DEFAULT_PID_FORECAST_LOOKAHEAD_MIN,
     DEFAULT_PID_FORECAST_BLEND,
     DEFAULT_POWER_MAX,
@@ -94,6 +94,12 @@ _LOGGER = logging.getLogger(__name__)
 
 # Grace period to wait for miner to change state before trusting reported state
 OPTIMISTIC_STATE_TIMEOUT = timedelta(minutes=3)
+# While the supply lockout is latched, re-send power_off at most this often if
+# the miner is found mining (e.g. started from its own web UI).
+LOCKOUT_REASSERT_INTERVAL = OPTIMISTIC_STATE_TIMEOUT.total_seconds()
+# PID-off safety override: minimum seconds between repeated power_min commands
+# while the reported limit still hasn't come down.
+SAFETY_RECOMMAND_INTERVAL = OPTIMISTIC_STATE_TIMEOUT.total_seconds()
 
 
 async def async_setup_entry(
@@ -107,95 +113,94 @@ async def async_setup_entry(
     config = data["config"]
     pid_state: dict = data["pid_state"]
 
-    entities = [
-        WhatsminerMiningSwitch(coordinator),
-        WhatsminerPIDSwitch(
-            coordinator=coordinator,
-            pid_state=pid_state,
-            power_min=config.get(CONF_POWER_MIN, DEFAULT_POWER_MIN),
-            power_max=config.get(CONF_POWER_MAX, DEFAULT_POWER_MAX),
-            kp=config.get(CONF_PID_KP, DEFAULT_PID_KP),
-            ki=config.get(CONF_PID_KI, DEFAULT_PID_KI),
-            kd=config.get(CONF_PID_KD, DEFAULT_PID_KD),
-            ke=config.get(CONF_PID_KE, DEFAULT_PID_KE),
-            default_target=config.get(CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP),
-            external_sensor_id=config.get(CONF_EXTERNAL_TEMP_SENSOR) or None,
-            outdoor_temp_sensor_id=config.get(CONF_PID_OUTDOOR_TEMP_SENSOR) or None,
-            default_power_limit=config.get(
-                CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
-            ),
-            min_power_step=config.get(
-                CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
-            ),
-            min_power_step_medium=config.get(
-                CONF_PID_MIN_POWER_STEP_MEDIUM, DEFAULT_PID_MIN_POWER_STEP_MEDIUM
-            ),
-            min_power_step_fine=config.get(
-                CONF_PID_MIN_POWER_STEP_FINE, DEFAULT_PID_MIN_POWER_STEP_FINE
-            ),
-            coarse_step_band=config.get(
-                CONF_PID_COARSE_STEP_BAND, DEFAULT_PID_COARSE_STEP_BAND
-            ),
-            fine_step_band=config.get(
-                CONF_PID_FINE_STEP_BAND, DEFAULT_PID_FINE_STEP_BAND
-            ),
-            min_adjust_interval=config.get(
-                CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
-            ),
-            min_adjust_interval_increase=config.get(
-                CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
-                DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
-            ),
-            chip_temp_safety_cap=config.get(
-                CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
-            ),
-            supply_temp_safety_cap=config.get(
-                CONF_PID_SUPPLY_TEMP_SAFETY_CAP, DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP
-            ),
-            supply_temp_lockout=config.get(
-                CONF_PID_SUPPLY_TEMP_LOCKOUT, DEFAULT_PID_SUPPLY_TEMP_LOCKOUT
-            ),
-            demand_entities=config.get(
-                CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
-            ),
-            demand_mode=config.get(
-                CONF_PID_DEMAND_MODE, DEFAULT_PID_DEMAND_MODE
-            ),
-            demand_floor_frac=config.get(
-                CONF_PID_DEMAND_FLOOR_FRAC, DEFAULT_PID_DEMAND_FLOOR_FRAC
-            ),
-            demand_ceiling_frac=config.get(
-                CONF_PID_DEMAND_CEILING_FRAC, DEFAULT_PID_DEMAND_CEILING_FRAC
-            ),
-            demand_weight_by_error=config.get(
-                CONF_PID_DEMAND_WEIGHT_BY_ERROR, DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR
-            ),
-            integral_band=config.get(
-                CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
-            ),
-            setpoint_ramp_rate=config.get(
-                CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
-            ),
-            slope_ewma_tau_s=config.get(
-                CONF_PID_SLOPE_EWMA_TAU_S, DEFAULT_PID_SLOPE_EWMA_TAU_S
-            ),
-            price_sensor_id=config.get(CONF_PID_PRICE_SENSOR) or None,
-            price_high=config.get(CONF_PID_PRICE_HIGH, 0.0),
-            price_low=config.get(CONF_PID_PRICE_LOW, 0.0),
-            surplus_sensor_id=config.get(CONF_PID_SURPLUS_SENSOR) or None,
-            surplus_deficit=config.get(CONF_PID_SURPLUS_DEFICIT, 0.0),
-            surplus_full=config.get(CONF_PID_SURPLUS_FULL, 0.0),
-            weather_entity_id=config.get(CONF_PID_WEATHER_ENTITY) or None,
-            forecast_lookahead_min=config.get(
-                CONF_PID_FORECAST_LOOKAHEAD_MIN, DEFAULT_PID_FORECAST_LOOKAHEAD_MIN
-            ),
-            forecast_blend=config.get(
-                CONF_PID_FORECAST_BLEND, DEFAULT_PID_FORECAST_BLEND
-            ),
+    pid_switch = WhatsminerPIDSwitch(
+        coordinator=coordinator,
+        pid_state=pid_state,
+        power_min=config.get(CONF_POWER_MIN, DEFAULT_POWER_MIN),
+        power_max=config.get(CONF_POWER_MAX, DEFAULT_POWER_MAX),
+        kp=config.get(CONF_PID_KP, DEFAULT_PID_KP),
+        ki=config.get(CONF_PID_KI, DEFAULT_PID_KI),
+        kd=config.get(CONF_PID_KD, DEFAULT_PID_KD),
+        ke=config.get(CONF_PID_KE, DEFAULT_PID_KE),
+        default_target=config.get(CONF_PID_TARGET_TEMP, DEFAULT_PID_TARGET_TEMP),
+        external_sensor_id=config.get(CONF_EXTERNAL_TEMP_SENSOR) or None,
+        outdoor_temp_sensor_id=config.get(CONF_PID_OUTDOOR_TEMP_SENSOR) or None,
+        default_power_limit=config.get(
+            CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
         ),
-    ]
+        min_power_step=config.get(
+            CONF_PID_MIN_POWER_STEP, DEFAULT_PID_MIN_POWER_STEP
+        ),
+        min_power_step_medium=config.get(
+            CONF_PID_MIN_POWER_STEP_MEDIUM, DEFAULT_PID_MIN_POWER_STEP_MEDIUM
+        ),
+        min_power_step_fine=config.get(
+            CONF_PID_MIN_POWER_STEP_FINE, DEFAULT_PID_MIN_POWER_STEP_FINE
+        ),
+        coarse_step_band=config.get(
+            CONF_PID_COARSE_STEP_BAND, DEFAULT_PID_COARSE_STEP_BAND
+        ),
+        fine_step_band=config.get(
+            CONF_PID_FINE_STEP_BAND, DEFAULT_PID_FINE_STEP_BAND
+        ),
+        min_adjust_interval=config.get(
+            CONF_PID_MIN_ADJUST_INTERVAL, DEFAULT_PID_MIN_ADJUST_INTERVAL
+        ),
+        min_adjust_interval_increase=config.get(
+            CONF_PID_MIN_ADJUST_INTERVAL_INCREASE,
+            DEFAULT_PID_MIN_ADJUST_INTERVAL_INCREASE,
+        ),
+        chip_temp_safety_cap=config.get(
+            CONF_CHIP_TEMP_SAFETY_CAP, DEFAULT_CHIP_TEMP_SAFETY_CAP
+        ),
+        supply_temp_safety_cap=config.get(
+            CONF_PID_SUPPLY_TEMP_SAFETY_CAP, DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP
+        ),
+        supply_temp_lockout=config.get(
+            CONF_PID_SUPPLY_TEMP_LOCKOUT, DEFAULT_PID_SUPPLY_TEMP_LOCKOUT
+        ),
+        demand_entities=config.get(
+            CONF_PID_DEMAND_ENTITIES, DEFAULT_PID_DEMAND_ENTITIES
+        ),
+        demand_mode=config.get(
+            CONF_PID_DEMAND_MODE, DEFAULT_PID_DEMAND_MODE
+        ),
+        demand_floor_frac=config.get(
+            CONF_PID_DEMAND_FLOOR_FRAC, DEFAULT_PID_DEMAND_FLOOR_FRAC
+        ),
+        demand_ceiling_frac=config.get(
+            CONF_PID_DEMAND_CEILING_FRAC, DEFAULT_PID_DEMAND_CEILING_FRAC
+        ),
+        demand_weight_by_error=config.get(
+            CONF_PID_DEMAND_WEIGHT_BY_ERROR, DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR
+        ),
+        integral_band=config.get(
+            CONF_PID_INTEGRAL_BAND, DEFAULT_PID_INTEGRAL_BAND
+        ),
+        setpoint_ramp_rate=config.get(
+            CONF_PID_SETPOINT_RAMP_RATE, DEFAULT_PID_SETPOINT_RAMP_RATE
+        ),
+        slope_ewma_tau_s=config.get(
+            CONF_PID_SLOPE_EWMA_TAU_S, DEFAULT_PID_SLOPE_EWMA_TAU_S
+        ),
+        price_sensor_id=config.get(CONF_PID_PRICE_SENSOR) or None,
+        price_high=config.get(CONF_PID_PRICE_HIGH, 0.0),
+        price_low=config.get(CONF_PID_PRICE_LOW, 0.0),
+        surplus_sensor_id=config.get(CONF_PID_SURPLUS_SENSOR) or None,
+        surplus_deficit=config.get(CONF_PID_SURPLUS_DEFICIT, 0.0),
+        surplus_full=config.get(CONF_PID_SURPLUS_FULL, 0.0),
+        weather_entity_id=config.get(CONF_PID_WEATHER_ENTITY) or None,
+        forecast_lookahead_min=config.get(
+            CONF_PID_FORECAST_LOOKAHEAD_MIN, DEFAULT_PID_FORECAST_LOOKAHEAD_MIN
+        ),
+        forecast_blend=config.get(
+            CONF_PID_FORECAST_BLEND, DEFAULT_PID_FORECAST_BLEND
+        ),
+    )
+    # The reset button calls back into the PID switch, which owns the latch.
+    data["pid_switch"] = pid_switch
 
-    async_add_entities(entities)
+    async_add_entities([WhatsminerMiningSwitch(coordinator, pid_state), pid_switch])
 
 
 class WhatsminerMiningSwitch(CoordinatorEntity, SwitchEntity):
@@ -209,9 +214,10 @@ class WhatsminerMiningSwitch(CoordinatorEntity, SwitchEntity):
     _attr_icon = "mdi:power"
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: WhatsminerCoordinator) -> None:
+    def __init__(self, coordinator: WhatsminerCoordinator, pid_state: dict) -> None:
         """Initialize the switch."""
         super().__init__(coordinator)
+        self._pid_state = pid_state
         self._attr_unique_id = f"{coordinator.data['mac']}_mining_control"
         self._attr_name = "Mining Control"
         # Optimistic state tracking
@@ -269,6 +275,11 @@ class WhatsminerMiningSwitch(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on mining (power on hashboards)."""
+        if self._pid_state.get("lockout_latched"):
+            raise HomeAssistantError(
+                "Supply temperature lockout is latched. Check the heating loop, "
+                "then press Reset Supply Lockout before turning mining back on."
+            )
         try:
             _LOGGER.info(f"Powering on hashboards on {self.coordinator.miner_ip}")
             result = await self.coordinator.api.power_on()
@@ -417,6 +428,16 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # Monotonic timestamp of the last adjust_power_limit call. 0 means
         # "never commanded in this process" — first PID tick may fire immediately.
         self._last_command_time: float = 0.0
+        # One control tick at a time: a slow miner command must not let the
+        # next poll's tick run concurrently against stale state.
+        self._step_lock = asyncio.Lock()
+        # Safety caps currently engaged ({"chip", "supply"}); logged on change.
+        self._caps_active: frozenset[str] = frozenset()
+        # True while the PID-off path is holding power_min for a safety cap,
+        # so we know to restore default_power_limit when it clears.
+        self._manual_safety_active = False
+        self._last_lockout_power_off: float = 0.0
+        self._pid_state.setdefault("lockout_latched", False)
         self._pid = PID(
             kp=kp,
             ki=ki,
@@ -432,11 +453,18 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             self._pid_state["target"] = default_target
 
     async def async_added_to_hass(self) -> None:
-        """Restore previous on/off state across HA restarts."""
+        """Restore previous on/off state and the lockout latch across restarts."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
         if last_state is None:
             return
+        if last_state.attributes.get("supply_lockout_latched"):
+            self._pid_state["lockout_latched"] = True
+            self._pid_state["safety_engaged"] = True
+            _LOGGER.warning(
+                "Supply temperature lockout is still latched from before restart — "
+                "mining stays off until Reset Supply Lockout is pressed"
+            )
         if last_state.state == STATE_ON:
             if self._external_sensor_id is None:
                 _LOGGER.warning(
@@ -467,6 +495,38 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
     def is_on(self) -> bool:
         """Return True if PID Mode is active."""
         return bool(self._pid_state.get("enabled"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the lockout latch; also how it survives restarts (RestoreEntity)."""
+        return {"supply_lockout_latched": bool(self._pid_state.get("lockout_latched"))}
+
+    async def async_reset_lockout(self) -> None:
+        """Clear the supply lockout latch once the loop has cooled.
+
+        Requires a live probe reading below the soft cap, so a reset can't be
+        issued blind. Does not power the miner on — the operator does that
+        with Mining Control afterwards.
+        """
+        if not self._pid_state.get("lockout_latched"):
+            return
+        temp = self._current_temperature()
+        if temp is None:
+            raise HomeAssistantError(
+                "Cannot reset supply lockout: the supply temperature sensor is "
+                "unavailable."
+            )
+        if temp >= self._supply_temp_safety_cap:
+            raise HomeAssistantError(
+                f"Cannot reset supply lockout: supply is {temp:.1f}°F, must be "
+                f"below the {self._supply_temp_safety_cap:.1f}°F safety cap."
+            )
+        self._pid_state["lockout_latched"] = False
+        self._pid_state["safety_engaged"] = False
+        _LOGGER.warning(
+            "Supply lockout reset at %.1f°F — turn Mining Control on to resume", temp
+        )
+        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
@@ -508,6 +568,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             )
         self._pid.clear_samples()
         self._last_input_time = None
+        self._manual_safety_active = False
         # Clear so the first PID tick after enable isn't blocked by a throttle
         # timer carried over from a prior PID-on session.
         self._last_command_time = 0.0
@@ -591,9 +652,152 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 )
         self._last_is_mining = is_mining
 
-        if self._pid_state.get("enabled"):
-            self.hass.async_create_task(self._run_pid_step())
+        # Safety runs on every poll, whether or not PID Mode is on. Skip if the
+        # previous tick is still talking to the miner.
+        if not self._step_lock.locked():
+            self.hass.async_create_task(self._run_control_step())
         super()._handle_coordinator_update()
+
+    async def _run_control_step(self) -> None:
+        """Run one serialized control tick."""
+        async with self._step_lock:
+            try:
+                await self._control_step()
+            except Exception:  # defensive — never break the coordinator loop
+                _LOGGER.exception("Whatsminer control step failed")
+            # Entities rendered pid_state before this tick updated it; refresh
+            # them now so safety/PID sensors don't lag a poll behind. Our own
+            # handler skips scheduling another tick while the lock is held.
+            self.coordinator.async_update_listeners()
+
+    async def _control_step(self) -> None:
+        """Safety first, then PID (when enabled).
+
+        Order of authority: supply lockout latch > safety caps > PID/demand.
+        """
+        temp = self._current_temperature()
+        is_mining = bool(self.coordinator.data.get("is_mining"))
+
+        if self._pid_state.get("lockout_latched"):
+            self._pid_state["safety_engaged"] = True
+            if is_mining:
+                await self._reassert_lockout()
+            return
+
+        if temp is not None and temp >= self._supply_temp_lockout:
+            await self._trip_lockout(temp)
+            return
+
+        # Nothing to regulate or protect while the miner is off.
+        if not is_mining:
+            return
+
+        caps = self._evaluate_safety_caps(temp)
+        if self._pid_state.get("enabled"):
+            await self._run_pid_step(temp, caps)
+        else:
+            await self._apply_manual_safety(caps)
+
+    async def _trip_lockout(self, temp: float) -> None:
+        """Latch the supply lockout and stop mining. Persisted across restarts."""
+        self._pid_state["lockout_latched"] = True
+        self._pid_state["safety_engaged"] = True
+        _LOGGER.critical(
+            "Supply temp %.1f°F ≥ lockout %.1f°F — stopping mining (latched until "
+            "Reset Supply Lockout is pressed)",
+            temp,
+            self._supply_temp_lockout,
+        )
+        self.async_write_ha_state()
+        await self._send_lockout_power_off()
+
+    async def _reassert_lockout(self) -> None:
+        """Miner is mining while latched (restart, web UI): stop it again."""
+        if time() - self._last_lockout_power_off < LOCKOUT_REASSERT_INTERVAL:
+            return
+        _LOGGER.warning("Miner is mining while supply lockout is latched — stopping it")
+        await self._send_lockout_power_off()
+
+    async def _send_lockout_power_off(self) -> None:
+        self._last_lockout_power_off = time()
+        try:
+            await self.coordinator.api.power_off()
+            self._last_commanded_power = None
+            self._last_command_time = time()
+        except Exception as err:
+            _LOGGER.error("Failed to stop mining on supply-temp lockout: %s", err)
+
+    def _evaluate_safety_caps(self, temp: float | None) -> frozenset[str]:
+        """Return the engaged soft caps, logging only when the set changes.
+
+        Chip-temp guards the *miner*; the supply cap guards the *plant* (a
+        stagnant loop can trip the boiler's own high-limit even at power_min).
+        Either forces power_min.
+        """
+        caps: set[str] = set()
+        chip = self._chip_temp()
+        if chip is not None and chip >= self._chip_temp_safety_cap:
+            caps.add("chip")
+        if temp is not None and temp >= self._supply_temp_safety_cap:
+            caps.add("supply")
+        active = frozenset(caps)
+        if active != self._caps_active:
+            if active - self._caps_active:
+                _LOGGER.warning(
+                    "Safety cap engaged (chip %s°F / cap %.1f°F, supply %s°F / cap "
+                    "%.1f°F) — forcing %dW",
+                    f"{chip:.1f}" if chip is not None else "?",
+                    self._chip_temp_safety_cap,
+                    f"{temp:.1f}" if temp is not None else "?",
+                    self._supply_temp_safety_cap,
+                    self._power_min,
+                )
+            elif not active:
+                _LOGGER.info("Safety caps cleared")
+            self._caps_active = active
+        return active
+
+    async def _apply_manual_safety(self, caps: frozenset[str]) -> None:
+        """Enforce safety caps while PID Mode is off.
+
+        Forces power_min while a cap is engaged, then restores the configured
+        default limit (the PID-off operating point) once it clears.
+        """
+        self._pid_state["safety_engaged"] = bool(caps)
+        current_limit = self.coordinator.data.get("wattage_limit") or 0
+        if caps:
+            if current_limit <= self._power_min:
+                self._manual_safety_active = True
+                return
+            if (
+                self._manual_safety_active
+                and time() - self._last_command_time < SAFETY_RECOMMAND_INTERVAL
+            ):
+                return  # already commanded; give the miner time to apply it
+            try:
+                await self.coordinator.api.set_power_limit(self._power_min)
+                self._last_commanded_power = self._power_min
+                self._last_command_time = time()
+                self._manual_safety_active = True
+            except Exception as err:
+                _LOGGER.error("Failed to force %dW for safety cap: %s", self._power_min, err)
+            return
+        if self._manual_safety_active:
+            self._manual_safety_active = False
+            try:
+                await self.coordinator.api.set_power_limit(self._default_power_limit)
+                self._last_commanded_power = self._default_power_limit
+                self._last_command_time = time()
+                _LOGGER.info(
+                    "Safety cap cleared — restored default power limit %dW",
+                    self._default_power_limit,
+                )
+            except Exception as err:
+                _LOGGER.error(
+                    "Failed to restore %dW after safety cap: %s",
+                    self._default_power_limit,
+                    err,
+                )
 
     def _chip_temp(self) -> float | None:
         """Return the miner's chip-temp average, or None when not reported.
@@ -949,13 +1153,15 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
             return float(self._power_max)
         return float(self._power_min) + (float(self._power_max) - float(self._power_min)) * (1.0 - (1.0 - self._demand_ceiling_frac) * (1.0 - index))
 
-    async def _run_pid_step(self) -> None:
-        """Compute PID output and push to the miner if it changed meaningfully."""
-        temp = self._current_temperature()
+    async def _run_pid_step(self, temp: float | None, caps: frozenset[str]) -> None:
+        """Compute PID output and push to the miner if it changed meaningfully.
+
+        Called only while mining, after the lockout check. ``caps`` are the
+        engaged safety caps, which force power_min.
+        """
         if temp is None:
-            return
-        # If the miner is off we have nothing to regulate — don't burn a token.
-        if not self.coordinator.data.get("is_mining"):
+            # Probe unavailable: PID paused, but safety caps still enforced.
+            await self._apply_manual_safety(caps)
             return
 
         now = time()
@@ -1104,42 +1310,10 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         new_power = requested_power
         current_limit = self.coordinator.data.get("wattage_limit") or 0
 
-        # Safety cap veto: chip-temp guards the *miner*; supply-temp caps guard
-        # the *plant* (boiler heat exchanger sees a stagnant loop and can trip
-        # its own high-limit even at miner power_min). All three force
-        # power_min and engage the safety binary sensor; the supply lockout
-        # additionally calls power_off() to latch mining off until the
-        # operator reviews and toggles Mining Control back on.
-        safety_engaged = False
-        supply_lockout = False
-        chip = self._chip_temp()
-        if chip is not None and chip >= self._chip_temp_safety_cap:
+        # Safety cap veto (evaluated in _control_step): force power_min.
+        safety_engaged = bool(caps)
+        if safety_engaged:
             new_power = self._power_min
-            safety_engaged = True
-            _LOGGER.warning(
-                "Chip temp %.1f°F ≥ cap %.1f°F — forcing %dW (PID override)",
-                chip,
-                self._chip_temp_safety_cap,
-                new_power,
-            )
-        if temp >= self._supply_temp_lockout:
-            new_power = self._power_min
-            safety_engaged = True
-            supply_lockout = True
-            _LOGGER.critical(
-                "Supply temp %.1f°F ≥ lockout %.1f°F — stopping mining (latched)",
-                temp,
-                self._supply_temp_lockout,
-            )
-        elif temp >= self._supply_temp_safety_cap:
-            new_power = self._power_min
-            safety_engaged = True
-            _LOGGER.warning(
-                "Supply temp %.1f°F ≥ cap %.1f°F — forcing %dW (PID override)",
-                temp,
-                self._supply_temp_safety_cap,
-                new_power,
-            )
 
         # Demand lockout: in lockout mode (default), if no configured thermostat
         # is calling for heat, the loop pump is likely idle and we have no flow
@@ -1181,19 +1355,6 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                 "demand_index": demand_index,
             }
         )
-
-        # Hard lockout: stop mining outright, then return without trying to
-        # set a power limit (the miner is going off — adjusting limits would
-        # race the power-off command). User must toggle Mining Control back
-        # on to recover; bumpless transfer at re-enable will re-seed the PID.
-        if supply_lockout:
-            try:
-                await self.coordinator.api.power_off()
-                self._last_commanded_power = None
-                self._last_command_time = time()
-            except Exception as err:
-                _LOGGER.error("Failed to stop mining on supply-temp lockout: %s", err)
-            return
 
         # Decide whether to actuate. Each adjust_power_limit call restarts
         # mining, so we gate on both magnitude (don't fire for sub-step wiggles)

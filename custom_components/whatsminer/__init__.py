@@ -90,6 +90,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "target": None,
             "enabled": False,
             "safety_engaged": False,
+            "lockout_latched": False,   # supply lockout; restored by the PID switch
             "demand_index": None,
         },
     }

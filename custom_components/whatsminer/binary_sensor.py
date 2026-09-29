@@ -77,10 +77,11 @@ class WhatsminerMiningSensor(CoordinatorEntity, BinarySensorEntity):
 class WhatsminerPIDSafetyBinarySensor(CoordinatorEntity, BinarySensorEntity):
     """Reflects the PID safety-cap override state.
 
-    On when the PID has clamped output to power_min because chip temp crossed
-    the configured safety cap. Chip temp is NOT a PID input — this sensor just
-    surfaces the veto so dashboards and automations can react to overheat
-    events that the miner firmware would otherwise absorb silently.
+    On while output is clamped to power_min by a safety cap (chip or supply
+    temp) or demand lockout, and while the supply lockout is latched. Caps are
+    enforced whether or not PID Mode is on. Chip temp is NOT a PID input —
+    this sensor just surfaces the veto so dashboards and automations can react
+    to overheat events that the miner firmware would otherwise absorb silently.
     """
 
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
@@ -115,6 +116,11 @@ class WhatsminerPIDSafetyBinarySensor(CoordinatorEntity, BinarySensorEntity):
     def is_on(self) -> bool:
         """Return true if the safety cap is currently engaged."""
         return bool(self._pid_state.get("safety_engaged"))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Distinguish the latched supply lockout from recoverable caps."""
+        return {"supply_lockout_latched": bool(self._pid_state.get("lockout_latched"))}
 
     @property
     def available(self) -> bool:

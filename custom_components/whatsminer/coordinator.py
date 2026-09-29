@@ -469,9 +469,12 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         
         # Mining status - check multiple indicators
         elapsed = summary.get("Elapsed", 0)
-        hashrate = result.get("hashrate", 0)
+        # Use the 5s hashrate: "MHS av" is a since-start average that stays
+        # non-zero for a while after hashing stops, which would hide a
+        # stopped miner from the PID and safety logic.
+        hashrate_5s = result.get("hashrate_5s", 0)
         # Miner is mining if it has uptime AND non-zero hashrate
-        result["is_mining"] = elapsed > 0 and hashrate > 0
+        result["is_mining"] = elapsed > 0 and hashrate_5s > 0
         
         result["uptime"] = elapsed
         # Accepted/Rejected may be in summary (old firmware) or in pools (new firmware)

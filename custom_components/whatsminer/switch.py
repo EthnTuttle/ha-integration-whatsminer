@@ -655,7 +655,7 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
             if not self._outdoor_unavail_logged:
                 _LOGGER.warning(
-                    "Outdoor temp sensor %s unavailable — PID will not use feedforward",
+                    "Outdoor temp sensor %s unavailable — using weather entity if configured",
                     self._outdoor_temp_sensor_id,
                 )
                 self._outdoor_unavail_logged = True
@@ -684,6 +684,39 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
                     err,
                 )
                 return None
+        return value
+
+    def _read_weather_temp_fahrenheit(self) -> float | None:
+        """Read the weather entity's current temperature attribute in °F."""
+        if self._weather_entity_id is None:
+            return None
+        state = self.hass.states.get(self._weather_entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN, None):
+            return None
+        try:
+            value = float(state.attributes.get("temperature"))
+        except (TypeError, ValueError):
+            return None
+        unit = (
+            state.attributes.get("temperature_unit")
+            or self.hass.config.units.temperature_unit
+        )
+        if unit != UnitOfTemperature.FAHRENHEIT:
+            try:
+                value = TemperatureConverter.convert(
+                    value, unit, UnitOfTemperature.FAHRENHEIT
+                )
+            except Exception:
+                return None
+        return value
+
+    def _read_outdoor_fahrenheit(self) -> float | None:
+        """Current outdoor temp: dedicated sensor, else the weather entity."""
+        value = None
+        if self._outdoor_temp_sensor_id is not None:
+            value = self._read_outdoor_sensor_fahrenheit()
+        if value is None:
+            value = self._read_weather_temp_fahrenheit()
         return value
 
     def _read_price_sensor(self) -> float | None:
@@ -741,10 +774,12 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
 
         If weather entity is configured, blends current outdoor temp with forecast
         temperature at lookahead_min. Otherwise returns current outdoor temp.
+        Current temp comes from the outdoor sensor, or the weather entity's own
+        temperature when no sensor is configured.
 
         Cache duration: 120 seconds (fixed).
         """
-        outdoor = self._read_outdoor_sensor_fahrenheit()
+        outdoor = self._read_outdoor_fahrenheit()
         if outdoor is None:
             return None
         if self._weather_entity_id is None:
@@ -978,7 +1013,11 @@ class WhatsminerPIDSwitch(CoordinatorEntity, SwitchEntity, RestoreEntity):
         # not configured or unavailable, pass None (leaves _dext=0, _external=0).
         # Uses blended forecast temperature when weather entity is configured.
         outdoor_temp = None
-        if self._outdoor_temp_sensor_id is not None and self._ke > 0:
+        has_outdoor = (
+            self._outdoor_temp_sensor_id is not None
+            or self._weather_entity_id is not None
+        )
+        if has_outdoor and self._ke > 0:
             outdoor_temp = await self._blended_outdoor_temp(now)
 
         # Envelope mode: apply demand-scaled output bounds before calc() so the

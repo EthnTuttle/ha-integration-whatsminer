@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from datetime import timedelta, datetime
+from time import monotonic
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
@@ -26,9 +27,25 @@ try:
 except ImportError:
     AES = None
 
+from .api_v3 import (
+    DEFAULT_SUPER_PASSWORD,
+    SERVICE_START,
+    SERVICE_STOP,
+    WhatsminerV3API,
+    WhatsminerV3Error,
+)
 from .unit_helpers import c_to_f
 
 _LOGGER = logging.getLogger(__name__)
+
+# asic-rs (whatsminer firmware.rs) selects the v3 API for firmware dated on or
+# after this. Older firmware skips the 4433 probe entirely.
+V3_MIN_FIRMWARE_DATE = 20241101
+# With the firmware version unknown, a failed v3 probe is retried after this
+# long (under the 180 s lockout/shutoff reassert, so the next re-send tries v3
+# again). Firmware dated for v3 never caches a miss. A success is cached until
+# the entry reloads (or a v3 command fails).
+V3_REPROBE_S = 60.0
 
 DEFAULT_DATA = {
     "hostname": None,
@@ -49,6 +66,10 @@ DEFAULT_DATA = {
     "rejected": 0,
     "hashboards": [],
     "fans": [],
+    # v2 status mineroff: the firmware's own "stopped" flag (set by a v3
+    # set.miner.service stop). Informational; is_mining stays hashrate-only.
+    "miner_off": None,
+    "miner_off_reason": None,
 }
 
 
@@ -81,7 +102,13 @@ class WhatsminerAPI:
     - Privileged commands: AES-256-ECB encrypted, base64 encoded
     """
 
-    def __init__(self, host: str, port: int, password: str = "admin"):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        password: str = "admin",
+        super_password: str = DEFAULT_SUPER_PASSWORD,
+    ):
         """Initialize API."""
         self.host = host
         self.port = port
@@ -89,6 +116,20 @@ class WhatsminerAPI:
         self._cipher = None
         self._sign: str | None = None
         self._token_timestamp: datetime | None = None
+        # Mining stop/start goes over v3 when the miner has it (see api_v3).
+        self.v3 = WhatsminerV3API(host, password, super_password, legacy_port=port)
+        # Set by the coordinator from v2 status; gates the v3 probe.
+        self.firmware_version: str | None = None
+        self._v3_available: bool | None = None
+        self._v3_checked_at: float = 0.0
+        # The miner was last stopped by set.miner.service (ours, or the v2
+        # status says "by whatsminer api"): only a v3 start is known to undo
+        # that, so power_on insists on v3 instead of reporting v2 as success.
+        self._stopped_via_v3 = False
+        # Why the last stop/start went out as v2 on firmware that should have
+        # v3 (None when v3 carried it, or v2 is all the miner has). The
+        # controller turns this into a notification.
+        self.v3_fallback: str | None = None
 
     async def _send_raw(self, message: str, timeout: int = 10) -> bytes:
         """Send raw message to miner and get response bytes."""
@@ -172,6 +213,10 @@ class WhatsminerAPI:
     async def get_miner_info(self) -> dict | None:
         """Get miner device info (hostname, MAC, IP)."""
         return await self.send_command("get_miner_info")
+
+    async def get_status(self) -> dict | None:
+        """Get btminer status (mineroff flag, firmware version)."""
+        return await self.send_command("status")
 
     async def _initialize_write_access(self) -> None:
         """Initialize write access by getting token and setting up encryption.
@@ -342,13 +387,128 @@ class WhatsminerAPI:
         
         return response
 
+    @property
+    def control_api(self) -> str:
+        """Which API stops/starts mining: "v3", "v2", or "unknown" before detection."""
+        if self._v3_available is None:
+            return "unknown"
+        return "v3" if self._v3_available else "v2"
+
+    def _firmware_date(self) -> int | None:
+        """YYYYMMDD from a version like 20250409.15.REL, if known."""
+        match = re.match(r"\s*'?(\d{8})", self.firmware_version or "")
+        return int(match.group(1)) if match else None
+
+    def _v3_expected(self) -> bool:
+        """The firmware is dated for v3, so a v3 miss is transient, not absence."""
+        date = self._firmware_date()
+        return date is not None and date >= V3_MIN_FIRMWARE_DATE
+
+    def note_status(self, miner_off: bool | None, reason: str | None) -> None:
+        """Track a set.miner.service stop from v2 status (also one made outside HA)."""
+        if miner_off is False:
+            self._stopped_via_v3 = False
+        elif miner_off and reason and "whatsminer api" in reason.lower():
+            date = self._firmware_date()
+            if date is None or date >= V3_MIN_FIRMWARE_DATE:
+                self._stopped_via_v3 = True
+
+    async def _use_v3(self) -> bool:
+        """Decide whether a stop/start goes over v3.
+
+        Firmware older than V3_MIN_FIRMWARE_DATE never has it. Firmware dated
+        for v3 always tries it: a refused 4433 (btminer restarting, just
+        booted) must not pin stops to the v2 power_off that does not hold, so
+        the write itself is the probe and a miss falls back for that one
+        command only. With the version unknown, a get.device.info probe
+        decides and a miss is re-probed after V3_REPROBE_S.
+        """
+        if self._v3_available or self._stopped_via_v3 or self._v3_expected():
+            return True
+        date = self._firmware_date()
+        if date is not None and date < V3_MIN_FIRMWARE_DATE:
+            if self._v3_available is None:
+                _LOGGER.info(
+                    "Firmware %s on %s predates the v3 API — using v2 power_off/power_on",
+                    self.firmware_version, self.host,
+                )
+            self._v3_available = False
+            return False
+        if self._v3_available is False and monotonic() - self._v3_checked_at < V3_REPROBE_S:
+            return False
+        self._v3_checked_at = monotonic()
+        try:
+            self._v3_available = await self.v3.probe()
+        except Exception as err:  # detection must never block the v2 fallback
+            _LOGGER.debug(f"v3 probe on {self.host} raised: {err!r}")
+            self._v3_available = False
+        _LOGGER.info(
+            "v3 API on %s:%s %s", self.host, self.v3.port,
+            "detected — mining stop/start will use set.miner.service"
+            if self._v3_available else "not available — using v2 power_off/power_on",
+        )
+        return self._v3_available
+
+    async def _set_mining(self, on: bool) -> dict:
+        """Stop or start mining: v3 set.miner.service, else the v2 command.
+
+        v2 power_off does not hold on 2025 firmware (btminer restarts and
+        resumes hashing), so v3 is preferred whenever the miner has it. A
+        failed v3 stop still sends v2 power_off: a stop that may not hold
+        beats no stop, and the controller re-asserts if hashing comes back.
+        A start after a v3 stop is different: v2 power_on is not known to undo
+        set.miner.service stop, so it is sent best-effort and the call raises,
+        letting the caller record a failed resume and retry.
+        """
+        action = SERVICE_START if on else SERVICE_STOP
+        legacy = "power_on" if on else "power_off"
+        must_v3 = on and self._stopped_via_v3
+        expected = must_v3 or self._v3_expected()
+        v3_error: Exception | None = None
+        if await self._use_v3():
+            try:
+                response = await self.v3.set_miner_service(action)
+            except Exception as err:
+                v3_error = err
+                _LOGGER.warning(
+                    "v3 set.miner.service %s failed on %s (%s) — %s v2 %s",
+                    action, self.host, err,
+                    "also sending" if must_v3 else "falling back to", legacy,
+                )
+                self._v3_available = None  # re-probe on the next command
+            else:
+                if self._v3_available is not True:
+                    _LOGGER.info("v3 API on %s:%s in use for mining stop/start", self.host, self.v3.port)
+                self._v3_available = True
+                self._stopped_via_v3 = not on
+                self.v3_fallback = None
+                _LOGGER.info("Mining %s on %s via v3 set.miner.service", action, self.host)
+                return response
+        self.v3_fallback = (
+            f"v3 set.miner.service {action} failed ({v3_error}); sent v2 {legacy}"
+            if expected and v3_error is not None else None
+        )
+        _LOGGER.info("Mining %s on %s via v2 %s", action, self.host, legacy)
+        try:
+            response = await self.send_privileged_command(legacy, respbefore="true")
+        except Exception:
+            if not must_v3:
+                raise
+            response = None
+        if must_v3:
+            raise WhatsminerV3Error(
+                f"v3 start failed on {self.host} after a v3 stop ({v3_error}); "
+                "v2 power_on was sent but is not known to undo it", getattr(v3_error, "code", None),
+            ) from v3_error
+        return response
+
     async def power_on(self) -> dict:
-        """Power on hashboards and start mining."""
-        return await self.send_privileged_command("power_on", respbefore="true")
+        """Start mining (v3 service start, else v2 power_on)."""
+        return await self._set_mining(True)
 
     async def power_off(self) -> dict:
-        """Power off hashboards and stop mining."""
-        return await self.send_privileged_command("power_off", respbefore="true")
+        """Stop mining (v3 service stop, else v2 power_off)."""
+        return await self._set_mining(False)
 
     async def set_power_limit(self, power_limit: int) -> dict:
         """Set the power limit in watts."""
@@ -377,12 +537,13 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         port: int,
         scan_interval: int,
         name: str,
+        super_password: str = DEFAULT_SUPER_PASSWORD,
     ) -> None:
         """Initialize coordinator."""
         self.miner_ip = ip
         self.password = password
         self.port = port
-        self.api = WhatsminerAPI(ip, port, password)
+        self.api = WhatsminerAPI(ip, port, password, super_password)
         self._failure_count = 0
         # Last MAC read from get_miner_info; keeps unique_ids stable if that
         # one command fails on a later poll.
@@ -407,6 +568,21 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         result["hostname"] = msg.get("hostname")
         result["mac"] = msg.get("mac", "").replace(":", "_").lower()
         result["ip"] = msg.get("ip")
+        return result
+
+    def _parse_status(self, data: dict) -> dict:
+        """Parse btminer status: mineroff flag and firmware version."""
+        result = {}
+        msg = data.get("Msg") if isinstance(data, dict) else None
+        if not isinstance(msg, dict):
+            return result
+        fw = msg.get("Firmware Version")
+        if fw:
+            result["fw_ver"] = str(fw).strip().strip("'")
+        off = msg.get("mineroff", msg.get("btmineroff"))
+        if off is not None:
+            result["miner_off"] = str(off).strip().lower() == "true"
+            result["miner_off_reason"] = msg.get("mineroff_reason") or None
         return result
 
     def _parse_summary(self, data: dict) -> dict:
@@ -556,7 +732,13 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             self.api.get_pools(),
             return_exceptions=True
         )
-        for result in (summary_data, miner_info_data, devs_data, pools_data):
+        # After the batch, not in it: the firmware caps concurrent API
+        # connections ("over max connect").
+        try:
+            status_data = await self.api.get_status()
+        except Exception as err:
+            status_data = err
+        for result in (summary_data, miner_info_data, devs_data, pools_data, status_data):
             if isinstance(result, Exception):
                 _LOGGER.debug(f"Request to {self.miner_ip} raised: {result!r}")
 
@@ -588,6 +770,16 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             data["mac"] = self._mac
 
             data.update(self._parse_summary(summary_data))
+
+            if _ok(status_data):
+                status = self._parse_status(status_data)
+                data.update(status)
+                if status.get("fw_ver"):
+                    self.api.firmware_version = status["fw_ver"]
+                self.api.note_status(status.get("miner_off"), status.get("miner_off_reason"))
+            # Hashrate stays the only source of is_mining: miner_off is the
+            # firmware's word, and a stale "true" must never hide a miner that
+            # is hashing from the lockout reassert.
 
             if _ok(devs_data):
                 data["hashboards"] = self._parse_devs(devs_data)

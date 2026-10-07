@@ -40,6 +40,7 @@
         "description": "Configure connection settings, power bounds, target temperature, and PID gains. The PID controller is always on; these settings define the power range it may command and how hard it pushes.",
         "data": {
           "password": "Password",
+          "super_password": "API v3 Super Password",
           "scan_interval": "Scan Interval (seconds)",
           "power_min": "Minimum Power Limit (watts)",
           "power_max": "Maximum Power Limit (watts)",
@@ -50,6 +51,7 @@
         },
         "data_description": {
           "password": "The API password for the miner",
+          "super_password": "Password of the miner's \"super\" account (default: super). Used on port 4433 to stop and start mining on firmware from November 2024 on; older firmware falls back to the v2 power_off/power_on commands.",
           "scan_interval": "How often to poll the miner for updates (10-300 seconds)",
           "power_min": "Lowest power limit the PID controller may command",
           "power_max": "Highest power limit the PID controller may command",

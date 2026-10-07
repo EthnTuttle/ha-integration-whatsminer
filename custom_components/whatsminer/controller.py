@@ -177,6 +177,9 @@ class _Regression(NamedTuple):
     seen_uptime: float
     limit: int | None
     ours: bool
+    # How long the run that ended had hashed: prev_uptime minus Elapsed at
+    # the last idle poll (a v3 stop/start does not reset Elapsed).
+    run_s: float
 
 
 class WhatsminerController:
@@ -290,6 +293,7 @@ class WhatsminerController:
         self._saved_target: float | None = None
         self._resume_hold_until = 0.0
         self._max_off_notified = False
+        self._v2_fallback_notified = False
         self._no_demand_logged = False
         self._demand_unavail_logged = False
         self._slope_ewma: float | None = None
@@ -321,6 +325,10 @@ class WhatsminerController:
         self._sent_limit: int | None = None
         self._sent_limit_at: float = 0.0
         self._last_uptime: float | None = None
+        # Elapsed at the last poll that was up but not hashing. A v3 service
+        # stop keeps btminer (and Elapsed) running, so the run that follows a
+        # v3 start is uptime minus this, not uptime.
+        self._idle_uptime: float | None = None
         self._run_limit: int | None = None
         self._floor_short_runs = 0
         self._floor_short_run_limit: int | None = None
@@ -761,6 +769,10 @@ class WhatsminerController:
             return
         if uptime <= 0:
             return
+        if self.coordinator.data.get("miner_off") is True:
+            # Stopped on purpose (v3 service stop keeps Elapsed counting):
+            # not a boot, and a limit change could restart it.
+            return
         believed = self._reference(limit)
         caps = self._evaluate_safety_caps(temp)
         if self._freeze_hold_over_lockout:
@@ -801,6 +813,7 @@ class WhatsminerController:
             _LOGGER.warning("Demand shutoff: powering the miner off — %s", decision.reason)
             try:
                 await self.coordinator.api.power_off()
+                self._note_control_path()
                 self._mark_actuation()
                 self._last_commanded_power = None
                 self._last_command_time = time()
@@ -831,6 +844,7 @@ class WhatsminerController:
                 await self._save()
                 try:
                     await self.coordinator.api.power_on()
+                    self._note_control_path()
                     self._mark_actuation()
                     self._resume_hold_until = time() + RESUME_BOOT_HOLD_S
                     self._last_commanded_power = None
@@ -855,6 +869,7 @@ class WhatsminerController:
             _LOGGER.warning("Demand shutoff: miner started while we own a stop — reasserting power_off")
             try:
                 await self.coordinator.api.power_off()
+                self._note_control_path()
                 self._mark_actuation()
                 self._last_command_time = time()
             except Exception as err:
@@ -938,11 +953,32 @@ class WhatsminerController:
         self._last_lockout_power_off = time()
         try:
             await self.coordinator.api.power_off()
+            self._note_control_path()
             self._mark_actuation()
             self._last_commanded_power = None
             self._last_command_time = time()
         except Exception as err:
             _LOGGER.error("Failed to stop mining on supply-temp lockout: %s", err)
+
+    def _note_control_path(self) -> None:
+        """Notify while stops/starts fall back to v2 on firmware that has v3.
+
+        v2 power_off does not hold on that firmware, so a stop that went out
+        as v2 is one the lockout and demand shutoff can't count on.
+        """
+        fallback = getattr(self.coordinator.api, "v3_fallback", None)
+        if fallback:
+            self._v2_fallback_notified = True
+            self._notify(
+                "v2_fallback",
+                "Miner command sent via v2 fallback",
+                f"{fallback}. On this firmware v2 power_off may not keep the miner "
+                "off; the controller re-sends the stop if hashing returns. Check "
+                "that the miner's API (port 4433) is reachable.",
+            )
+        elif self._v2_fallback_notified:
+            self._v2_fallback_notified = False
+            persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_v2_fallback")
 
     # ------------------------------------------------------------ safety caps
 
@@ -1476,14 +1512,20 @@ class WhatsminerController:
                 seen_uptime=uptime,
                 limit=self._run_limit,
                 ours=self._pending_restart_is_ours(now),
+                run_s=self._last_uptime - (self._idle_uptime or 0.0),
             )
         self._last_uptime = uptime
+        if self._idle_uptime is not None and uptime < self._idle_uptime:
+            self._idle_uptime = None  # btminer restarted since
+        if not is_mining:
+            self._idle_uptime = uptime if uptime > 0 else None
+        hashed_for = uptime - (self._idle_uptime or 0.0)
         sent = self._recently_sent_limit()
         if sent is not None:
             self._run_limit = sent
         elif limit > 0:
             self._run_limit = limit
-        if is_mining and uptime >= FLOOR_STABLE_S and self._run_limit:
+        if is_mining and hashed_for >= FLOOR_STABLE_S and self._run_limit:
             # This run held its limit: the episode (if any) is over.
             changed = self._floor_short_runs or self._floor_exhausted or self._restart_loop_notified
             self._floor_short_runs = 0
@@ -1506,7 +1548,7 @@ class WhatsminerController:
         if regression.ours:
             self._pending_restart_at = None
         self._last_restart_ours = regression.ours
-        if regression.ours or regression.prev_uptime >= FLOOR_STABLE_S or not regression.limit:
+        if regression.ours or regression.run_s >= FLOOR_STABLE_S or not regression.limit:
             return
         limit = regression.limit
         if (
@@ -1522,7 +1564,7 @@ class WhatsminerController:
         quiet = self._floor_exhausted or self._restart_loop_notified or "chip" in self._caps_active
         (_LOGGER.info if quiet else _LOGGER.warning)(
             "Miner restarted on its own after hashing %.0fs at %dW (%d short run%s in a row)",
-            regression.prev_uptime, limit, self._floor_short_runs,
+            regression.run_s, limit, self._floor_short_runs,
             "" if self._floor_short_runs == 1 else "s",
         )
         self._consider_floor_raise(limit, now)

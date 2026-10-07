@@ -57,6 +57,11 @@ def install() -> None:
 
     exceptions.HomeAssistantError = HomeAssistantError
 
+    class ConfigEntryNotReady(HomeAssistantError):
+        pass
+
+    exceptions.ConfigEntryNotReady = ConfigEntryNotReady
+
     components = _mod("homeassistant.components")
     components.__path__ = []
     pn = _mod("homeassistant.components.persistent_notification")
@@ -74,6 +79,9 @@ def install() -> None:
 
     helpers = _mod("homeassistant.helpers")
     helpers.__path__ = []
+    _mod("homeassistant.helpers.entity_registry")  # only for package __init__
+    aiohttp_client = _mod("homeassistant.helpers.aiohttp_client")
+    aiohttp_client.async_get_clientsession = lambda hass: None
     storage = _mod("homeassistant.helpers.storage")
 
     class Store:

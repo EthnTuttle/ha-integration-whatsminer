@@ -71,6 +71,15 @@ class WhatsminerMiningSensor(CoordinatorEntity, BinarySensorEntity):
         return self.coordinator.data.get("is_mining", False)
 
     @property
+    def extra_state_attributes(self) -> dict:
+        """The firmware's own stopped flag and which API stops/starts mining."""
+        return {
+            "miner_off": self.coordinator.data.get("miner_off"),
+            "miner_off_reason": self.coordinator.data.get("miner_off_reason"),
+            "control_api": self.coordinator.api.control_api,
+        }
+
+    @property
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.available and self.coordinator.last_update_success

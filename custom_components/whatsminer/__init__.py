@@ -27,9 +27,11 @@ from .const import (
     CONF_PID_SUPPLY_TEMP_LOCKOUT,
     CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_TARGET_TEMP,
+    CONF_SUPER_PASSWORD,
     DEFAULT_PASSWORD,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SUPER_PASSWORD,
     DOMAIN,
     PLATFORMS,
     REMOVED_OPTION_KEYS_V4,
@@ -51,11 +53,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     port = entry.data.get(CONF_PORT, DEFAULT_PORT)
     scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
     name = entry.data.get(CONF_NAME) or entry.title
+    super_password = entry.data.get(CONF_SUPER_PASSWORD) or DEFAULT_SUPER_PASSWORD
 
     # Apply options overrides if they exist
     if entry.options:
         password = entry.options.get(CONF_PASSWORD, password)
         scan_interval = entry.options.get(CONF_SCAN_INTERVAL, scan_interval)
+        super_password = entry.options.get(CONF_SUPER_PASSWORD) or super_password
 
     _LOGGER.info(f"Setting up Whatsminer at {miner_ip}:{port}")
 
@@ -67,6 +71,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         port=port,
         scan_interval=scan_interval,
         name=name,
+        super_password=super_password,
     )
 
     # Perform initial data fetch. If the miner doesn't answer and we have seen

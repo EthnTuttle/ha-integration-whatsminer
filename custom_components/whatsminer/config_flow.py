@@ -72,6 +72,7 @@ from .const import (
     CONF_PID_WEATHER_ENTITY,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
+    CONF_SUPER_PASSWORD,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_FREEZE_GUARD_FORECAST_HOURS,
     DEFAULT_FREEZE_GUARD_THRESHOLD,
@@ -112,6 +113,7 @@ from .const import (
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SUPER_PASSWORD,
     DEMAND_SHUTOFF_MODES,
     DOMAIN,
 )
@@ -261,6 +263,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_PASSWORD,
                         default=self._current_data.get(CONF_PASSWORD, DEFAULT_PASSWORD),
+                    ): str,
+                    vol.Optional(
+                        CONF_SUPER_PASSWORD,
+                        default=self._current_data.get(
+                            CONF_SUPER_PASSWORD, DEFAULT_SUPER_PASSWORD
+                        ),
                     ): str,
                     vol.Optional(
                         CONF_SCAN_INTERVAL,

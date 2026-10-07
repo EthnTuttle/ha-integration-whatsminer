@@ -15,6 +15,8 @@ PLATFORMS = [
 # Configuration keys
 CONF_IP = "host"
 CONF_PASSWORD = "password"
+# API v3 "super" account password, used to stop/start mining on 4433.
+CONF_SUPER_PASSWORD = "super_password"
 CONF_PORT = "port"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_NAME = "name"
@@ -87,6 +89,7 @@ REMOVED_OPTION_KEYS_V4: tuple[str, ...] = (
 # Defaults
 DEFAULT_PORT = 4028
 DEFAULT_PASSWORD = "admin"
+DEFAULT_SUPER_PASSWORD = "super"
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 DEFAULT_POWER_MIN = 1000  # watts
 DEFAULT_POWER_MAX = 5000  # watts

@@ -41,6 +41,10 @@ All temperatures are in °F.
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
 
+## Upgrading from 1.7
+
+1.8 stops and starts mining over the miner's API v3 (port 4433, `set.miner.service stop`/`start`) on firmware from November 2024 on. On that firmware the old v2 `power_off` does not hold: btminer restarts and resumes hashing within minutes, so the supply lockout and the demand shutoff could not keep the miner off. The first stop opens the v3 write API once over port 4028 with the admin password. Set **API v3 Super Password** in Configure if the miner's `super` account is not on the default `super`. Older firmware, or any v3 failure, falls back to v2 `power_off`/`power_on`; the **Mining Status** sensor's `control_api` attribute shows which path is in use.
+
 ## Upgrading from 1.6
 
 1.7 adds optional Braiins Pool sensors (see *Braiins Pool*). Nothing changes until a token is entered in the last Configure step.
@@ -72,6 +76,7 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | Name | Whatsminer `<ip>` | Friendly name; entity IDs are derived from its slug |
 | Password | `admin` | Miner admin password |
 | Port | `4028` | API port |
+| API v3 Super Password | `super` | Password of the miner's `super` account, used on port 4433 to stop and start mining (Configure only) |
 | Scan Interval | `30` s | Poll frequency (10–300 s) |
 | Power Min | `1000` W | Lower bound of the PID output, and what every cap and lockout forces. Must be a limit the miner can actually hold: the firmware accepts any value and crash-loops below the hashboards' real minimum. For an M64 use about `2000` W (see *Learned power floor*). |
 | Power Max | `5000` W | Upper bound of the PID output |

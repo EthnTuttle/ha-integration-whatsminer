@@ -137,6 +137,13 @@ def _get_current_values(config_entry: config_entries.ConfigEntry) -> dict[str, A
     return {**config_entry.data, **config_entry.options}
 
 
+def _power_bounds_ok(values: dict[str, Any]) -> bool:
+    """power_min must be below power_max or the controller's PID refuses to construct."""
+    return int(values.get(CONF_POWER_MIN, DEFAULT_POWER_MIN)) < int(
+        values.get(CONF_POWER_MAX, DEFAULT_POWER_MAX)
+    )
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Whatsminer."""
 
@@ -148,7 +155,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
-        if user_input is not None:
+        if user_input is not None and not _power_bounds_ok(user_input):
+            errors["base"] = "power_bounds"
+        elif user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
             except CannotConnect:
@@ -229,13 +238,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Step 1: Connection, power bounds, target, gains."""
         self._current_data = _get_current_values(self.config_entry)
+        errors: dict[str, str] = {}
 
         if user_input is not None:
             self._current_data.update(user_input)
-            return await self.async_step_safety()
+            if _power_bounds_ok(self._current_data):
+                return await self.async_step_safety()
+            errors["base"] = "power_bounds"
 
         return self.async_show_form(
             step_id="init",
+            errors=errors,
             data_schema=vol.Schema(
                 {
                     vol.Optional(

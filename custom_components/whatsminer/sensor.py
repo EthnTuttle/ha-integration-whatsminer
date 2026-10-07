@@ -587,6 +587,7 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict:
         shutoff = self._pid_state.get("demand_shutoff") or {}
         freeze = self._pid_state.get("freeze_guard") or {}
+        floor = self._pid_state.get("power_floor") or {}
         return {
             "supply_lockout_latched": bool(self._pid_state.get("lockout_latched")),
             "safety_engaged": bool(self._pid_state.get("safety_engaged")),
@@ -607,6 +608,11 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
             "freeze_guard_value": freeze.get("value"),
             "freeze_guard_threshold": freeze.get("threshold"),
             "outdoor_24h_mean": self._pid_state.get("outdoor_mean"),
+            "power_floor_effective": floor.get("effective"),
+            "power_floor_learned": floor.get("learned"),
+            "power_floor_unholdable_limit": floor.get("unholdable_limit"),
+            "power_floor_proven_ok": floor.get("proven_ok"),
+            "restart_short_runs": floor.get("short_runs"),
         }
 
 

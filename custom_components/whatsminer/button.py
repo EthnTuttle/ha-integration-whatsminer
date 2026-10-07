@@ -21,7 +21,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up Whatsminer buttons from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([WhatsminerResetLockoutButton(data["coordinator"], data)])
+    async_add_entities(
+        [
+            WhatsminerResetLockoutButton(data["coordinator"], data),
+            WhatsminerResetFloorButton(data["coordinator"], data),
+        ]
+    )
 
 
 class WhatsminerResetLockoutButton(CoordinatorEntity, ButtonEntity):
@@ -65,3 +70,26 @@ class WhatsminerResetLockoutButton(CoordinatorEntity, ButtonEntity):
         if controller is None:
             raise HomeAssistantError("Controller is not set up yet")
         await controller.async_reset_lockout()
+
+
+class WhatsminerResetFloorButton(WhatsminerResetLockoutButton):
+    """Forget the learned power floor so lower limits are tried again.
+
+    The controller raises its effective minimum above any limit the miner
+    repeatedly restarts at; press this after servicing the hashboards.
+    """
+
+    _attr_icon = "mdi:arrow-collapse-down"
+
+    def __init__(self, coordinator: WhatsminerCoordinator, data: dict) -> None:
+        """Initialize the button."""
+        super().__init__(coordinator, data)
+        self._attr_unique_id = f"{coordinator.data['mac']}_reset_learned_floor"
+        self._attr_name = "Reset Learned Floor"
+
+    async def async_press(self) -> None:
+        """Clear the learned floor."""
+        controller = self._data.get("controller")
+        if controller is None:
+            raise HomeAssistantError("Controller is not set up yet")
+        await controller.async_reset_learned_floor()

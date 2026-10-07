@@ -27,6 +27,7 @@
     "error": {
       "cannot_connect": "Failed to connect to the miner. Please check the IP address and ensure the miner is online.",
       "invalid_auth": "Invalid authentication. Please check the password.",
+      "power_bounds": "Minimum power limit must be below the maximum power limit.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
@@ -34,6 +35,9 @@
     }
   },
   "options": {
+    "error": {
+      "power_bounds": "Minimum power limit must be below the maximum power limit."
+    },
     "step": {
       "init": {
         "title": "Whatsminer Options: Connection & PID Core",

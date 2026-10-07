@@ -21,7 +21,7 @@ import math
 from dataclasses import replace
 from datetime import datetime, timedelta
 from time import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
@@ -134,6 +134,29 @@ LOCKOUT_REASSERT_INTERVAL = 180.0
 RESUME_BOOT_HOLD_S = 600.0
 # Retry a power_on whose send failed (timeout, token error) after this long.
 POWER_ON_RETRY_S = 60.0
+# Learned power floor. The firmware accepts any limit and treats it as a
+# ceiling; below the hashboards' real minimum it cannot find a frequency
+# solution and simply restarts btminer, forever (M64: ~3 min cycles at 1000 W).
+# A restart is an Elapsed (uptime) regression, confirmed by the next poll (a
+# single garbled summary reads Elapsed 0 too), that we did not command. Two in
+# a row from runs shorter than FLOOR_STABLE_S at about the same limit prove
+# that limit unholdable and raise the effective floor to limit +
+# FLOOR_RAISE_STEP; every further crash in the same episode raises again. A
+# run that hashes for FLOOR_STABLE_S proves its limit holdable and ends the
+# episode. The floor can climb at most FLOOR_MAX_RAISE_W above power_min;
+# restarts above that ceiling are reported as a restart loop, not learned.
+FLOOR_STABLE_S = 900.0
+FLOOR_SHORT_RUNS_TO_LEARN = 2
+FLOOR_RAISE_STEP = 250
+FLOOR_MAX_RAISE_W = 1500
+# Re-send a floor enforcement command no sooner than this if the send failed.
+FLOOR_FIRE_RETRY_S = 60.0
+# Caps that clamp to the configured power_min even when a higher floor has
+# been learned: the chip-temp cap and the freeze-guard hold over the supply
+# lockout. There the alternative to an intermittent crash loop is up to
+# FLOOR_MAX_RAISE_W more watts into chips already over temperature or a loop
+# already past its hard limit, and the crash loop dissipates less heat.
+HARD_CAPS = frozenset({"chip", "lockout"})
 # After a user's Mining Control OFF, ignore lingering "mining" readings for this
 # long so the PID can't send a limit change to a miner that is powering down.
 USER_OFF_GRACE_S = 180.0
@@ -145,6 +168,15 @@ FORECAST_STALE_MAX_S = 6 * 3600.0
 OUTDOOR_SAMPLE_INTERVAL_S = 3600.0
 
 STORE_VERSION = 1
+
+
+class _Regression(NamedTuple):
+    """An Elapsed regression awaiting confirmation by the next poll."""
+
+    prev_uptime: float
+    seen_uptime: float
+    limit: int | None
+    ours: bool
 
 
 class WhatsminerController:
@@ -278,6 +310,28 @@ class WhatsminerController:
         self._step_lock = asyncio.Lock()
         self._caps_active: frozenset[str] = frozenset()
         self._last_lockout_power_off: float = 0.0
+        # Restart attribution and the learned floor. _last_actuation_at is
+        # never zeroed (unlike _last_command_time) so it survives the stop
+        # edge; _pending_restart_at is consumed by the first uptime regression
+        # after one of our own commands.
+        self._last_actuation_at: float = 0.0
+        self._pending_restart_at: float | None = None
+        self._pending_regression: _Regression | None = None
+        self._last_restart_ours = False
+        self._sent_limit: int | None = None
+        self._sent_limit_at: float = 0.0
+        self._last_uptime: float | None = None
+        self._run_limit: int | None = None
+        self._floor_short_runs = 0
+        self._floor_short_run_limit: int | None = None
+        self._floor_learned: int | None = None
+        self._floor_learned_at: float | None = None
+        self._floor_learn_limit: int | None = None
+        self._floor_proven_ok: int | None = None
+        self._floor_exhausted = False
+        self._restart_loop_notified = False
+        self._floor_chip_notified = False
+        self._last_floor_fire_at: float = 0.0
         self._pid = PID(
             kp=self._kp,
             ki=float(g(CONF_PID_KI, DEFAULT_PID_KI)),
@@ -292,6 +346,7 @@ class WhatsminerController:
             self._pid_state["target"] = self._default_target
         self._publish_shutoff(ds.Decision(ds.NONE, "starting", (), self._shutoff))
         self._publish_freeze(None, None, None)
+        self._publish_floor()
         self._pid_state["control_mode"] = "idle"
 
     # ------------------------------------------------------------------ setup
@@ -335,6 +390,24 @@ class WhatsminerController:
             [(float(ts), float(v)) for ts, v in data.get("outdoor_samples") or []], now
         )
         self._freeze_active = bool(data.get("freeze_active", False))
+        try:
+            learned = data.get("floor_learned")
+            if learned is not None and int(learned) > self._power_min:
+                self._floor_learned = int(learned)
+                learned_at, learn_limit = data.get("floor_learned_at"), data.get("floor_learn_limit")
+                self._floor_learned_at = float(learned_at) if learned_at is not None else None
+                self._floor_learn_limit = int(learn_limit) if learn_limit is not None else None
+            if data.get("floor_proven_ok") is not None:
+                self._floor_proven_ok = int(data["floor_proven_ok"])
+        except (TypeError, ValueError):
+            self._floor_learned = self._floor_learned_at = self._floor_learn_limit = None
+        if self._floor_learned is not None:
+            _LOGGER.warning(
+                "Learned power floor %dW in effect (Power Min %dW) — the miner could not hold "
+                "%sW before; press Reset Learned Floor to re-test lower limits",
+                self._floor(), self._power_min, self._floor_learn_limit,
+            )
+        self._publish_floor()
         self._publish_shutoff(ds.Decision(ds.NONE, "restored", (), self._shutoff))
         self._unsub_coordinator = self.coordinator.async_add_listener(
             self._handle_coordinator_update
@@ -381,6 +454,10 @@ class WhatsminerController:
             "shutoff": self._shutoff.to_dict(),
             "outdoor_samples": [[ts, v] for ts, v in self._outdoor_samples],
             "freeze_active": self._freeze_active,
+            "floor_learned": self._floor_learned,
+            "floor_learned_at": self._floor_learned_at,
+            "floor_learn_limit": self._floor_learn_limit,
+            "floor_proven_ok": self._floor_proven_ok,
         }
 
     async def _save(self) -> None:
@@ -413,6 +490,7 @@ class WhatsminerController:
                 _LOGGER.warning(
                     "Mining Control OFF by user — the controller will not auto-resume"
                 )
+            self._mark_actuation()
             self._freeze_off_notified = False
             await self._save()
             self._publish_shutoff(ds.Decision(ds.NONE, "user override", (), self._shutoff))
@@ -445,12 +523,46 @@ class WhatsminerController:
         _LOGGER.warning("Supply lockout reset at %.1f°F — turn Mining Control on to resume", temp)
         self.coordinator.async_update_listeners()
 
+    async def async_reset_learned_floor(self) -> None:
+        """Forget the learned floor so lower limits are tried again.
+
+        For after the hardware has been serviced (reseated ribbon, busbar).
+        There is no automatic downward re-test: boot survival at a marginal
+        limit is stochastic, so a timed re-probe would recreate the crash loop.
+        """
+        async with self._step_lock:
+            had = self._floor_learned
+            self._floor_learned = None
+            self._floor_learned_at = None
+            self._floor_learn_limit = None
+            self._floor_proven_ok = None
+            self._floor_short_runs = 0
+            self._floor_short_run_limit = None
+            self._floor_exhausted = False
+            self._restart_loop_notified = False
+            self._floor_chip_notified = False
+            await self._save()
+        for key in ("floor_raised", "floor_ceiling", "restart_loop", "restart_loop_chip_cap"):
+            persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{key}")
+        _LOGGER.warning(
+            "Learned power floor reset (was %s) — the effective minimum is Power Min %dW again",
+            f"{had}W" if had is not None else "not set", self._power_min,
+        )
+        self._publish_floor()
+        self.coordinator.async_update_listeners()
+
     # --------------------------------------------------------- coordinator
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Detect mining transitions then run a control step."""
         is_mining = bool(self.coordinator.data.get("is_mining"))
+        now = time()
+        if self.coordinator.last_update_success:
+            try:
+                self._note_poll(is_mining, now)
+            except Exception:  # bookkeeping must never block edge handling or the tick
+                _LOGGER.exception("Restart bookkeeping failed")
         if self._last_is_mining is None and is_mining:
             # First poll after (re)load with the miner already hashing: seed so
             # the first tick doesn't slam the limit from Kp·error alone, and
@@ -479,11 +591,19 @@ class WhatsminerController:
                 _LOGGER.info("Mining stopped — PID controller state reset")
             else:
                 # Whatever started it (our resume, firmware auto-start, web UI),
-                # it is booting now: no limit change for the boot hold.
+                # it is booting now: no limit change for the boot hold. A start
+                # we caused always arms it; an uncommanded start arms it only
+                # while no short-run episode is open (the first spontaneous
+                # restart gets a hold, the crash loop that may follow does
+                # not), so the hold expires at most RESUME_BOOT_HOLD_S after
+                # the first start of an episode however fast the miner loops.
                 seeded = self._seed_bumpless_transfer()
-                self._resume_hold_until = max(self._resume_hold_until, time() + RESUME_BOOT_HOLD_S)
+                ours = self._claim_start(now)
+                if ours or self._floor_short_runs == 0:
+                    self._resume_hold_until = max(self._resume_hold_until, now + RESUME_BOOT_HOLD_S)
                 _LOGGER.info(
-                    "Mining resumed — re-seeded PID for bumpless transfer (≈%dW)", seeded
+                    "Mining resumed — re-seeded PID for bumpless transfer (≈%dW)%s", seeded,
+                    "" if ours else " (restart not commanded by the controller)",
                 )
         self._last_is_mining = is_mining
         if not self._step_lock.locked():
@@ -584,6 +704,8 @@ class WhatsminerController:
             self._pid_state["control_mode"] = "idle"
             self._pid_state["safety_engaged"] = False
             self._null_pid_internals()
+            if fresh and self._floor_learned is not None and now - self._user_off_at >= USER_OFF_GRACE_S:
+                await self._enforce_floor_while_booting(temp, now)
             if freeze is True and fresh and not self._freeze_off_notified:
                 self._freeze_off_notified = True
                 _LOGGER.warning(
@@ -607,8 +729,36 @@ class WhatsminerController:
 
         caps = self._evaluate_safety_caps(temp)
         if self._freeze_hold_over_lockout:
-            caps = caps | {"supply"}
+            caps = caps | {"lockout"}
         await self._run_pid_step(temp, caps, summary, state)
+
+    async def _enforce_floor_while_booting(self, temp: float | None, now: float) -> None:
+        """Send the floor to a miner that is up at an unholdable limit but not hashing.
+
+        A boot below the hardware floor can die before the short-window
+        hashrate ever turns non-zero, so is_mining never flips and the hashing
+        tick that normally enforces the floor never comes; the loop would run
+        forever with the floor learned but inert. btminer being up (Elapsed >
+        0) at a known limit is enough to act on.
+        """
+        try:
+            uptime = float(self.coordinator.data.get("uptime") or 0)
+            limit = int(self.coordinator.data.get("wattage_limit") or 0)
+        except (TypeError, ValueError):
+            return
+        if uptime <= 0:
+            return
+        believed = self._reference(limit)
+        caps = self._evaluate_safety_caps(temp)
+        if self._freeze_hold_over_lockout:
+            caps = caps | {"lockout"}
+        if not self._floor_fire(believed, now, caps):
+            return
+        _LOGGER.warning(
+            "Miner is up at %dW (Elapsed %.0fs) but not hashing, below the learned floor %dW — "
+            "commanding the floor", believed, uptime, self._floor(),
+        )
+        await self._set_power_limit(self._floor(), True)
 
     # ------------------------------------------------------ shutoff plumbing
 
@@ -638,6 +788,7 @@ class WhatsminerController:
             _LOGGER.warning("Demand shutoff: powering the miner off — %s", decision.reason)
             try:
                 await self.coordinator.api.power_off()
+                self._mark_actuation()
                 self._last_commanded_power = None
                 self._last_command_time = time()
                 self._max_off_notified = False
@@ -667,6 +818,7 @@ class WhatsminerController:
                 await self._save()
                 try:
                     await self.coordinator.api.power_on()
+                    self._mark_actuation()
                     self._resume_hold_until = time() + RESUME_BOOT_HOLD_S
                     self._last_commanded_power = None
                     self._last_command_time = time()
@@ -690,6 +842,7 @@ class WhatsminerController:
             _LOGGER.warning("Demand shutoff: miner started while we own a stop — reasserting power_off")
             try:
                 await self.coordinator.api.power_off()
+                self._mark_actuation()
                 self._last_command_time = time()
             except Exception as err:
                 _LOGGER.error("Demand shutoff: reassert power_off failed: %s", err)
@@ -772,6 +925,7 @@ class WhatsminerController:
         self._last_lockout_power_off = time()
         try:
             await self.coordinator.api.power_off()
+            self._mark_actuation()
             self._last_commanded_power = None
             self._last_command_time = time()
         except Exception as err:
@@ -784,7 +938,9 @@ class WhatsminerController:
 
         Chip-temp guards the *miner*; the supply cap guards the *plant* (a
         stagnant loop can trip the boiler's own high-limit even at power_min).
-        Either forces power_min.
+        The supply cap forces the effective floor (power_min, or the learned
+        floor when the miner has proven it cannot hold power_min); the chip
+        cap forces power_min regardless (see HARD_CAPS).
         """
         caps: set[str] = set()
         chip = self._chip_temp()
@@ -797,12 +953,14 @@ class WhatsminerController:
             if active - self._caps_active:
                 _LOGGER.warning(
                     "Safety cap engaged (chip %s°F / cap %.1f°F, supply %s°F / cap "
-                    "%.1f°F) — forcing %dW",
+                    "%.1f°F) — forcing %dW%s",
                     f"{chip:.1f}" if chip is not None else "?",
                     self._chip_temp_safety_cap,
                     f"{temp:.1f}" if temp is not None else "?",
                     self._supply_temp_safety_cap,
-                    self._power_min,
+                    self._cap_clamp(active),
+                    f" (Power Min {self._power_min}W is unholdable)"
+                    if self._cap_clamp(active) > self._power_min else "",
                 )
             elif not active:
                 _LOGGER.info("Safety caps cleared")
@@ -1092,6 +1250,11 @@ class WhatsminerController:
         """Seed the PID integral so the first tick output ≈ current miner wattage."""
         current_limit = self.coordinator.data.get("wattage_limit") or 0
         known = current_limit > 0
+        sent = self._recently_sent_limit()
+        if sent is not None:
+            # The summary lags a limit change by a poll or two (and reads 0
+            # mid-reboot); what we just sent is the better estimate.
+            current_limit, known = sent, True
         if not known:
             # Unknown limit: seed the integrator from power_max (fail-warm) but
             # leave the actuation reference unknown so the first real command
@@ -1107,7 +1270,7 @@ class WhatsminerController:
     def _fallback_power(self, summary: str) -> tuple[int | None, str]:
         """Open-loop power for when the supply probe is unavailable."""
         if summary == ds.ALL_IDLE:
-            return self._power_min, "no thermostat demand"
+            return self._floor(), "no thermostat demand"
         outdoor = self._read_outdoor_fahrenheit()
         if outdoor is None or self._fallback_outdoor_warm <= self._fallback_outdoor_cold:
             return None, "no outdoor temperature"
@@ -1115,7 +1278,7 @@ class WhatsminerController:
             self._fallback_outdoor_warm - self._fallback_outdoor_cold
         )
         frac = max(0.0, min(1.0, frac))
-        lo, hi = float(self._power_min), float(self._power_max)
+        lo, hi = float(self._floor()), float(self._power_max)
         return int(round(lo + (hi - lo) * frac)), f"outdoor {outdoor:.1f}°F"
 
     async def _run_fallback_step(self, caps: frozenset[str], summary: str, now: float) -> None:
@@ -1133,7 +1296,7 @@ class WhatsminerController:
             self._pid_state["control_mode"] = "fallback"
             return  # nothing to go on and no known limit: hold whatever it is
         requested = target if target is not None else reference
-        new_power = self._power_min if caps else requested
+        new_power = self._cap_clamp(caps) if caps else max(requested, self._floor())
         demand_lockout = basis == "no thermostat demand"
         self._null_pid_internals()
         self._pid_state.update(
@@ -1142,12 +1305,15 @@ class WhatsminerController:
                 "output": reference,
                 "safety_engaged": bool(caps) or demand_lockout,
                 "out_max_effective": self._power_max,
-                "out_min_effective": self._power_min,
+                "out_min_effective": self._floor(),
             }
         )
         self._pid_state["control_mode"] = (
             "safety_cap" if caps else ("demand_lockout" if demand_lockout else "fallback")
         )
+        floor_fire = self._floor_fire(reference, now, caps)
+        if floor_fire:
+            new_power = self._floor()  # enforce exactly the floor, never a curve step through the hold
         if reference is None:
             step_ok, interval_ok = True, True
         else:
@@ -1155,31 +1321,300 @@ class WhatsminerController:
             interval = self._min_adjust_interval_increase if new_power > reference else self._min_adjust_interval
             step_ok = delta >= self._min_power_step
             interval_ok = now - self._last_command_time >= interval
-        if not step_ok or not (interval_ok or caps):
+        if not floor_fire and (not step_ok or not (interval_ok or caps)):
             return
-        if now < self._resume_hold_until and not caps:
+        if now < self._resume_hold_until and not caps and not floor_fire:
             _LOGGER.debug("Fallback actuation held: miner booting after resume")
             return
         _LOGGER.info(
             "Fallback (%s): power %dW (was %s)", "safety cap" if caps else basis, new_power,
             f"{reference}W" if reference is not None else "unknown",
         )
-        await self._set_power_limit(new_power)
+        await self._set_power_limit(new_power, floor_fire)
 
     def _reference(self, current_limit: int) -> int | None:
         """What we believe the miner's limit is, or None when unknown."""
         if self._last_commanded_power is not None:
             return self._last_commanded_power
+        sent = self._recently_sent_limit()
+        if sent is not None:
+            return sent
         return int(current_limit) if current_limit and current_limit > 0 else None
 
-    async def _set_power_limit(self, new_power: int) -> None:
+    async def _set_power_limit(self, new_power: int, floor_fire: bool = False) -> None:
         try:
             await self.coordinator.api.set_power_limit(new_power)
+            self._mark_actuation()
+            self._sent_limit = new_power
+            self._sent_limit_at = time()
+            self._run_limit = new_power
             self._last_commanded_power = new_power
             self._last_command_time = time()
             self._pid_state["output"] = new_power
         except Exception as err:
             _LOGGER.error("Failed to set power limit to %dW: %s", new_power, err)
+            return
+        if floor_fire:
+            # The raise was only scheduled for persistence (callback context);
+            # make sure an HA crash right after this restart can't lose it.
+            await self._save()
+
+    # --------------------------------------------------------- learned floor
+
+    def _floor(self) -> int:
+        """The lowest limit we will command: power_min, or the learned floor."""
+        floor = max(self._power_min, self._floor_learned or 0)
+        return max(self._power_min, min(floor, self._power_max - self._min_power_step))
+
+    def _floor_ceiling(self) -> int:
+        """The highest floor learning may reach; restarts above it are not floor evidence."""
+        return min(self._power_min + FLOOR_MAX_RAISE_W, self._power_max - self._min_power_step)
+
+    def _cap_clamp(self, caps: frozenset[str]) -> int:
+        """What an engaged cap forces: power_min for HARD_CAPS, else the floor."""
+        return self._power_min if caps & HARD_CAPS else self._floor()
+
+    def _mark_actuation(self) -> None:
+        """We just sent a command that stops or restarts btminer."""
+        now = time()
+        self._last_actuation_at = now
+        self._pending_restart_at = now
+
+    def _pending_restart_is_ours(self, now: float) -> bool:
+        pending = self._pending_restart_at
+        return pending is not None and now - pending < RESUME_BOOT_HOLD_S
+
+    def _claim_start(self, now: float) -> bool:
+        """At a mining start edge: did one of our own commands cause this boot?
+
+        Normally the Elapsed regression that preceded the start settled it
+        (``_last_restart_ours``). A regression seen but not yet confirmed
+        carries its own attribution. With no regression at all (power_on from
+        off, a one-poll down phase the regression check missed) a recent
+        command of ours claims the start and is consumed by it.
+        """
+        ours = self._last_restart_ours
+        self._last_restart_ours = False
+        if self._pending_regression is not None:
+            return ours or self._pending_regression.ours
+        if not ours and self._pending_restart_is_ours(now):
+            self._pending_restart_at = None
+            ours = True
+        return ours
+
+    def _recently_sent_limit(self) -> int | None:
+        if self._sent_limit is not None and time() - self._sent_limit_at < RESUME_BOOT_HOLD_S:
+            return self._sent_limit
+        return None
+
+    def _floor_fire(self, believed: int | None, now: float, caps: frozenset[str] = frozenset()) -> bool:
+        """True when the miner is believed to sit below a learned floor.
+
+        Like a safety cap this bypasses the interval and boot-hold gates: a
+        miner below a floor it has proven it cannot hold is about to restart
+        anyway, so the restart our command causes costs nothing. Inert while
+        a HARD_CAP holds the miner at power_min, once learning is exhausted,
+        and when no floor has been learned (a limit merely below the
+        configured power_min waits for the normal gates).
+        """
+        if self._floor_learned is None or self._floor_exhausted or caps & HARD_CAPS:
+            return False
+        if believed is None or believed >= self._floor():
+            return False
+        if now - self._last_floor_fire_at < FLOOR_FIRE_RETRY_S:
+            return False
+        self._last_floor_fire_at = now
+        _LOGGER.info(
+            "Floor enforcement: believed limit %dW is below the learned floor %dW — commanding the floor",
+            believed, self._floor(),
+        )
+        return True
+
+    def _note_poll(self, is_mining: bool, now: float) -> None:
+        """Track uptime and the limit in force; count uncommanded restarts.
+
+        A restart is an Elapsed regression confirmed by the following poll
+        (Elapsed still below the pre-regression value): a single garbled
+        summary parses to Elapsed 0 and must not count. Hashrate blips (pool
+        outage) do not reset Elapsed and so are never counted. The first
+        regression after one of our own commands is ours.
+        """
+        try:
+            uptime = float(self.coordinator.data.get("uptime") or 0)
+        except (TypeError, ValueError):
+            uptime = 0.0
+        try:
+            limit = int(self.coordinator.data.get("wattage_limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        regression = self._pending_regression
+        if regression is not None:
+            self._pending_regression = None
+            if uptime + 5 < regression.prev_uptime:
+                self._count_restart(regression, now)
+            else:
+                _LOGGER.debug(
+                    "Ignoring a one-poll Elapsed glitch (%.0fs → %.0fs → %.0fs)",
+                    regression.prev_uptime, regression.seen_uptime, uptime,
+                )
+        elif self._last_uptime is not None and uptime + 5 < self._last_uptime:
+            self._pending_regression = _Regression(
+                prev_uptime=self._last_uptime,
+                seen_uptime=uptime,
+                limit=self._run_limit,
+                ours=self._pending_restart_is_ours(now),
+            )
+        self._last_uptime = uptime
+        sent = self._recently_sent_limit()
+        if sent is not None:
+            self._run_limit = sent
+        elif limit > 0:
+            self._run_limit = limit
+        if is_mining and uptime >= FLOOR_STABLE_S and self._run_limit:
+            # This run held its limit: the episode (if any) is over.
+            changed = self._floor_short_runs or self._floor_exhausted or self._restart_loop_notified
+            self._floor_short_runs = 0
+            self._floor_short_run_limit = None
+            self._floor_exhausted = False
+            self._restart_loop_notified = False
+            self._floor_chip_notified = False
+            # A limit we sent during this run has not been held for a second
+            # yet (its restart is still to come): credit only a limit in force
+            # since the run began.
+            if sent is None and (self._floor_proven_ok is None or self._run_limit < self._floor_proven_ok):
+                self._floor_proven_ok = self._run_limit
+                changed = True
+            if changed:
+                self._save_later()
+        self._publish_floor()
+
+    def _count_restart(self, regression: _Regression, now: float) -> None:
+        """A confirmed Elapsed regression: attribute it, and count it if it ended a short run."""
+        if regression.ours:
+            self._pending_restart_at = None
+        self._last_restart_ours = regression.ours
+        if regression.ours or regression.prev_uptime >= FLOOR_STABLE_S or not regression.limit:
+            return
+        limit = regression.limit
+        if (
+            self._floor_short_run_limit is not None
+            and abs(limit - self._floor_short_run_limit) > FLOOR_RAISE_STEP
+        ):
+            # A different limit: evidence about the old one says nothing about
+            # this one (a PSU fault at 3300 W must not seed learning at a 1000 W
+            # clamp). Consecutive floor raises differ by exactly one step.
+            self._floor_short_runs = 0
+        self._floor_short_run_limit = limit
+        self._floor_short_runs += 1
+        quiet = self._floor_exhausted or self._restart_loop_notified or "chip" in self._caps_active
+        (_LOGGER.info if quiet else _LOGGER.warning)(
+            "Miner restarted on its own after hashing %.0fs at %dW (%d short run%s in a row)",
+            regression.prev_uptime, limit, self._floor_short_runs,
+            "" if self._floor_short_runs == 1 else "s",
+        )
+        self._consider_floor_raise(limit, now)
+
+    def _consider_floor_raise(self, limit: int, now: float) -> None:
+        if FLOOR_RAISE_STEP <= 0:
+            return
+        if "chip" in self._caps_active:
+            # Restarts under chip over-temperature must not be answered with
+            # more power. Nothing breaks this loop: the clamp stays at
+            # power_min and floor enforcement is inert while the cap holds, so
+            # it persists until the chips cool. Tell the operator once.
+            if not self._floor_chip_notified:
+                self._floor_chip_notified = True
+                _LOGGER.warning(
+                    "Miner restarting at %dW while the chip-temp cap is active — not raising the floor",
+                    limit,
+                )
+                self._notify(
+                    "restart_loop_chip_cap",
+                    "Miner restarting under the chip-temp cap",
+                    f"The miner keeps restarting at {limit} W while its chips are over the "
+                    f"{self._chip_temp_safety_cap:.0f}°F cap. The controller will not raise the "
+                    "power floor under over-temperature; check coolant flow to the miner.",
+                )
+            return
+        if self._floor_short_runs < FLOOR_SHORT_RUNS_TO_LEARN:
+            return
+        ceiling = self._floor_ceiling()
+        if limit > ceiling:
+            # A loop above anything the floor could reach is a PSU/pool/thermal
+            # problem, not floor evidence.
+            if not self._restart_loop_notified:
+                self._restart_loop_notified = True
+                _LOGGER.error(
+                    "Miner is restarting repeatedly at %dW (%d short runs; floor %dW) — check the miner",
+                    limit, self._floor_short_runs, self._floor(),
+                )
+                self._notify(
+                    "restart_loop",
+                    "Miner restarting repeatedly",
+                    f"The miner restarted {self._floor_short_runs} times in a row at a {limit} W "
+                    f"limit without a command from the controller. This is above the {ceiling} W "
+                    "the power floor could ever reach, so it is not treated as a power-floor "
+                    "problem. Check the miner's error codes, PSU and pool.",
+                )
+            return
+        new = limit + FLOOR_RAISE_STEP
+        if new <= self._floor():
+            return  # already enforcing a higher floor; the command is pending/retrying
+        if new > ceiling:
+            if not self._floor_exhausted:
+                self._floor_exhausted = True
+                _LOGGER.critical(
+                    "Miner cannot hold %dW and the floor may not exceed %dW (%d restarts) — "
+                    "not raising it further; the miner needs service",
+                    limit, ceiling, self._floor_short_runs,
+                )
+                self._notify(
+                    "floor_ceiling",
+                    f"Miner cannot hold any limit up to {ceiling} W",
+                    f"The miner keeps restarting at {limit} W. Raising the power floor further "
+                    f"would take it past {ceiling} W (Power Min {self._power_min} W + "
+                    f"{FLOOR_MAX_RAISE_W} W), so the controller has stopped raising it. On the "
+                    "M64 this pattern goes with hashboard errors 560-563 (slot power/hashrate "
+                    "imbalance: reseat the adapter/ribbon, re-torque the busbar). Turn Mining "
+                    "Control off if you want it stopped.",
+                )
+            return
+        self._floor_learned = new
+        self._floor_learned_at = now
+        self._floor_learn_limit = limit
+        self._floor_exhausted = False
+        if self._floor_proven_ok is not None and self._floor_proven_ok <= limit:
+            self._floor_proven_ok = None  # the hardware floor has moved
+        _LOGGER.warning(
+            "Miner restarted %d times in a row at %dW without a command — raising the effective "
+            "floor to %dW (Power Min %dW)", self._floor_short_runs, limit, new, self._power_min,
+        )
+        self._notify(
+            "floor_raised",
+            f"Miner cannot hold {limit} W",
+            f"The miner restarted {self._floor_short_runs} times in a row at a {limit} W limit "
+            f"without a command from the controller — hashing never lasted "
+            f"{FLOOR_STABLE_S / 60:.0f} min. The controller now treats {new} W as its lowest "
+            f"limit (Power Min is {self._power_min} W) and will not command below it. On the M64 "
+            "this pattern goes with hashboard errors 560-563 (slot power/hashrate imbalance: "
+            "reseat the adapter/ribbon, re-torque the busbar). After servicing, press Reset "
+            "Learned Floor to re-test lower limits.",
+        )
+        self._publish_floor()
+        self._save_later()
+
+    def _publish_floor(self) -> None:
+        self._pid_state["power_floor"] = {
+            "effective": self._floor(),
+            "configured": self._power_min,
+            "learned": self._floor_learned,
+            "learned_at": _iso(self._floor_learned_at),
+            "unholdable_limit": self._floor_learn_limit,
+            "proven_ok": self._floor_proven_ok,
+            "short_runs": self._floor_short_runs,
+            "exhausted": self._floor_exhausted,
+            "run_uptime_s": self._last_uptime,
+        }
 
     async def _run_pid_step(
         self, temp: float | None, caps: frozenset[str], summary: str, shutoff: ds.ShutoffState
@@ -1237,7 +1672,8 @@ class WhatsminerController:
 
         # Price/surplus envelope: constrain out_max. Order of precedence:
         # safety_caps > demand lockout > tou/surplus envelope > pid_output
-        self._pid.out_min = float(self._power_min)
+        floor = self._floor()
+        self._pid.out_min = float(floor)
         self._pid.out_max = float(self._power_max)
         if self._price_sensor_id is not None or self._surplus_sensor_id is not None:
             price_score = surplus_score = 1.0
@@ -1266,14 +1702,26 @@ class WhatsminerController:
             return
 
         sat_tol = 1.0
-        output_saturated = (
-            output >= float(self._power_max) - sat_tol or output <= float(self._power_min) + sat_tol
+        error = target - float(temp)
+        on_low_rail = output <= float(floor) + sat_tol
+        # Directional: freeze the integral only when it would wind further
+        # into the rail the output already sits on.
+        output_saturated = (output >= float(self._power_max) - sat_tol and error > 0) or (
+            on_low_rail and error < 0
         )
         if self._integral_band > 0 and error_abs > self._integral_band and output_saturated:
             self._pid.integral = integral_snapshot
             output = self._pid.proportional + integral_snapshot + self._pid.derivative + self._pid.external
-            output = max(min(output, float(self._power_max)), float(self._power_min))
+            output = max(min(output, float(self._power_max)), float(floor))
             self._pid._output = output
+        elif on_low_rail and error > 0:
+            # On the low rail with the supply below target. Every clamp
+            # restarts the miner and the start edge re-seeds output ≈ limit,
+            # i.e. exactly onto out_min; the vendored PID never integrates
+            # while its last output sits on a rail, so with a flat or rising
+            # supply nothing would ever lift it off. Nudge it just above so
+            # the integral can run next tick (a 1 W change commands nothing).
+            self._pid._output = float(floor) + sat_tol + 0.01
 
         self._last_input_time = now
         if not did_calc:
@@ -1286,14 +1734,14 @@ class WhatsminerController:
         safety_engaged = bool(caps)
         mode = "pid"
         if safety_engaged:
-            new_power = self._power_min
+            new_power = self._cap_clamp(caps)
             mode = "safety_cap"
 
         # Demand lockout: no thermostat calling → zone pumps idle → stagnant
-        # primary loop. Force power_min and engage safety. The shutoff dwell
+        # primary loop. Force the floor and engage safety. The shutoff dwell
         # runs on top of this clamp.
         if self._demand_entities and summary == ds.ALL_IDLE:
-            new_power = self._power_min
+            new_power = floor
             safety_engaged = True
             if mode == "pid":
                 mode = "demand_lockout"
@@ -1310,7 +1758,7 @@ class WhatsminerController:
         if shutoff.state == ds.DWELL:
             mode = "dwell"
             safety_engaged = True
-            new_power = self._power_min
+            new_power = floor
         self._pid_state["control_mode"] = mode
 
         self._pid_state.update(
@@ -1328,8 +1776,16 @@ class WhatsminerController:
         )
 
         # Actuation gate: magnitude, time, and the post-resume boot hold. Each
-        # adjust_power_limit restarts mining. Safety caps bypass the time gates.
+        # adjust_power_limit restarts mining. Safety caps and floor enforcement
+        # (believed limit below a floor the miner cannot hold) bypass the time
+        # gates and the boot hold.
         reference = self._reference(current_limit)
+        floor_fire = self._floor_fire(reference, now, caps)
+        if floor_fire:
+            # Enforce exactly the floor through the hold; the PID's own request
+            # (often far higher on a cold loop) goes through the normal gates.
+            new_power = floor
+            self._pid_state["output"] = new_power
         if reference is None:
             # No idea what the miner is at: one command is cheaper than guessing.
             reference = -10_000
@@ -1354,7 +1810,7 @@ class WhatsminerController:
         safety_fire = bool(caps) and step_ok
         boot_hold = now < self._resume_hold_until
 
-        if not safety_fire and (not (step_ok and interval_ok) or boot_hold):
+        if not safety_fire and not floor_fire and (not (step_ok and interval_ok) or boot_hold):
             _LOGGER.debug(
                 "PID actuation throttled: Δ=%dW (need %dW, %s band), elapsed=%.0fs (need %ds)%s",
                 delta, effective_min_step, band_label, elapsed, effective_interval,
@@ -1367,7 +1823,7 @@ class WhatsminerController:
             "PID: temp=%.1f°F target=%.1f°F → power %dW (was %dW, err=%.2f)",
             temp, target, new_power, reference, self._pid.error,
         )
-        await self._set_power_limit(new_power)
+        await self._set_power_limit(new_power, floor_fire)
 
 
 def _iso(ts: float | None) -> str | None:

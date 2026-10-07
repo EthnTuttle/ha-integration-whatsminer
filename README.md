@@ -13,9 +13,9 @@ All temperatures are in °F.
 - **Fan sensors**: Fan Speed (RPM), when applicable
 - **Binary sensors**: Mining Status; PID Safety Engaged (a cap or lockout is clamping output); Demand Shutoff (on while the integration owns a stop); Freeze Guard (on while freeze risk blocks stops)
 - **Switch**: Mining Control. This is the manual emergency override: off stops mining and is never auto-resumed; on clears any stop the integration owns.
-- **Button**: Reset Supply Lockout (clears the latched 140°F supply lockout)
+- **Buttons**: Reset Supply Lockout (clears the latched 140°F supply lockout); Reset Learned Floor (forgets a learned power floor after the miner has been serviced)
 - **Number**: PID Target Temperature (setpoint, dashboard-adjustable)
-- **Control Mode sensor** (enum): `pid`, `fallback`, `demand_lockout`, `safety_cap`, `dwell`, `stopped`, `resuming`, `latched`, `idle`. Attributes carry the full shutoff and freeze-guard picture: `supply_lockout_latched`, `demand_shutoff_state`, `demand_shutoff_reason`, `demand_shutoff_blocking`, `demand_shutoff_since`, `demand_shutoff_gate`, `freeze_guard_active`, `freeze_guard_source`, `freeze_guard_value`
+- **Control Mode sensor** (enum): `pid`, `fallback`, `demand_lockout`, `safety_cap`, `dwell`, `stopped`, `resuming`, `latched`, `idle`. Attributes carry the full shutoff and freeze-guard picture: `supply_lockout_latched`, `demand_shutoff_state`, `demand_shutoff_reason`, `demand_shutoff_blocking`, `demand_shutoff_since`, `demand_shutoff_gate`, `freeze_guard_active`, `freeze_guard_source`, `freeze_guard_value`, `power_floor_effective`, `power_floor_learned`, `power_floor_unholdable_limit`, `power_floor_proven_ok`, `restart_short_runs`
 - **Demand Shutoff State sensor** (enum): `disabled`, `running`, `dwell`, `stopped`, `resuming`, `suppressed`
 - **Outdoor 24h Mean sensor** (°F): the centred 24 h outdoor mean used as the warm gate
 - **PID diagnostic sensors**: Target, Error, Proportional, Integral, Derivative, Output, Requested Output, Demand Index, External Compensation, effective output bounds, PV slope
@@ -39,6 +39,10 @@ All temperatures are in °F.
 1. Copy the `custom_components/whatsminer` folder into your HA `custom_components` directory
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
+
+## Upgrading from 1.5
+
+1.6 adds the learned power floor (see *Learned power floor*), a Reset Learned Floor button and `power_floor_*` attributes on the Control Mode sensor. No config migration. Review `Power Min`: it must be a limit the miner can hold; for an M64 about 2000 W. The options flow now rejects `Power Min` ≥ `Power Max`.
 
 ## Upgrading from 1.4
 
@@ -64,7 +68,7 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | Password | `admin` | Miner admin password |
 | Port | `4028` | API port |
 | Scan Interval | `30` s | Poll frequency (10–300 s) |
-| Power Min | `1000` W | Lower bound of the PID output |
+| Power Min | `1000` W | Lower bound of the PID output, and what every cap and lockout forces. Must be a limit the miner can actually hold: the firmware accepts any value and crash-loops below the hashboards' real minimum. For an M64 use about `2000` W (see *Learned power floor*). |
 | Power Max | `5000` W | Upper bound of the PID output |
 | PID Target Temperature | `167` °F | Initial setpoint (adjustable later from the number entity) |
 | Kp / Ki / Kd | `111.11` / `2.78` / `55.56` | Gains, W per °F (Kp), W per °F·s (Ki), W per °F/s (Kd) |
@@ -136,6 +140,14 @@ The chip-temp cap guards the miner; the supply caps guard the plant. The supply 
 - **Hard cap, 140°F**: stops mining and **latches**. Crossing it means the soft cap could not hold, which with a stagnant loop can happen even at power_min. Nothing is restarted automatically; press **Reset Supply Lockout** or turn **Mining Control** on after reviewing why it tripped. The latch survives HA restarts (but not the 1.4 → 1.5 upgrade).
 
 `binary_sensor.<miner>_pid_safety_engaged` is on whenever a cap, lockout or demand lockout is clamping output, and stays on through a demand shutoff dwell and stop so it does not toggle at the stop boundary. Use `binary_sensor.<miner>_demand_shutoff` and the `supply_lockout_latched` attribute to tell the cases apart.
+
+### Learned power floor
+
+The firmware treats `adjust_power_limit` as a ceiling and accepts any value. Below the hashboards' real minimum it cannot find a frequency solution and simply restarts btminer, forever (an M64 at 1000 W cycles every 2.5–4 min and never hashes). Before 1.6 every such restart re-armed the 10 min boot hold, so the controller could never raise the limit again: a supply-cap clamp to an unholdable `Power Min` left the house cold until someone intervened.
+
+The controller now watches for restarts it did not command (an `Elapsed` regression confirmed by the next poll). Two in a row from runs shorter than 15 min at about the same limit prove that limit unholdable: the effective floor becomes limit + 250 W, is persisted, is sent through the boot hold, and every further crash in the same episode raises it another step. A run that hashes 15 min ends the episode. The floor replaces `Power Min` for the supply cap, demand lockout, dwell, fallback curve and the PID's lower bound; the chip-temp cap and the freeze-guard hold over the supply lockout still clamp to `Power Min` (less power into over-temperature chips or an over-limit loop beats more). Learning stops at `Power Min` + 1500 W; restarts above that are reported as a restart loop and left alone.
+
+Each raise costs one commanded restart, and a 1000 → 2000 W climb costs about five crashes and 25 min, so set `Power Min` to a limit the miner is known to hold rather than relying on learning. The learned floor is shown in the Control Mode sensor's `power_floor_*` attributes and the `floor_raised` notification. **Reset Learned Floor** clears it after the hashboards have been serviced (on the M64 a crash loop at low limits goes with error codes 560–563, slot loss of balance: reseat the adapter/ribbon, re-torque the busbar). Raising `Power Min` above the learned floor also drops it.
 
 ### Mining Control (manual override)
 

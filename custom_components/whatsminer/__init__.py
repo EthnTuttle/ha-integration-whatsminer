@@ -112,6 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "control_mode": "idle",
         "demand_shutoff": {},
         "freeze_guard": {},
+        "power_floor": {},          # learned floor; published by the controller
         "outdoor_mean": None,
     }
     controller = WhatsminerController(hass, entry, coordinator, pid_state, config)

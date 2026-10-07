@@ -4,7 +4,8 @@ The controller (controller.py) gathers readings, builds ``ShutoffInputs`` and
 calls :func:`decide` once per coordinator poll. ``decide`` returns the action
 to take and the next persisted state; it never performs I/O.
 
-Fail-warm is the governing rule: the miner is the only heat source, so every
+Fail-warm is the governing rule: the miner is the primary heat for the monitored
+zones, so every
 ambiguous reading blocks a stop or favours a resume.
 
 Thermostat classes

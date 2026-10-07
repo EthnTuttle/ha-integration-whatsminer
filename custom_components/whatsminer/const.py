@@ -172,7 +172,8 @@ DEFAULT_PID_FALLBACK_OUTDOOR_WARM = 60.0  # °F
 # OUTDOOR_MIN 58°F: bottom of the measured "1 kW is sufficient" band (60-62°F
 # at spring setpoints, shifted down for this season's lower setpoints) and the
 # middle of the physics crossover band for a 1600 sq ft slab. Recalibrate from
-# observe-mode data. There is no backup heat source, so every ambiguous case
+# observe-mode data. The miner is the primary heat for the monitored zones, so
+# every ambiguous case
 # biases toward heating (fail-warm).
 DEMAND_SHUTOFF_MODES = ["off", "observe", "active"]
 DEFAULT_PID_DEMAND_SHUTOFF_MODE = "off"

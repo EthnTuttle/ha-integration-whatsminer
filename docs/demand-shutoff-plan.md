@@ -267,6 +267,8 @@ PID Safety Engaged also gets a `demand_shutoff_active` attribute.
 
 ## 9. Implementation notes (2026-10-06)
 
+Correction from the owner: the miner is the **primary** heat for the monitored (thermostat) zones, not the only heat in the house. The fail-warm bias stands; statements elsewhere about "no backup heat" overstate the stakes.
+
 Implemented in v1.5.0 with these deliberate departures from the plan above:
 
 - **PID only.** The PID Mode switch, Power Limit number, default power limit and the demand envelope mode were removed (config-entry v4 migration). The controller now lives in `controller.py`; `switch.py` keeps only Mining Control. The plan's "PID off during shutoff" question is moot.

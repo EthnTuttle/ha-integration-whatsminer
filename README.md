@@ -146,7 +146,7 @@ The chip-temp cap guards the miner; the supply caps guard the plant. The supply 
 
 ## Demand shutoff
 
-With every thermostat idle, the demand lockout already clamps the miner to `Power Min` (1 kW), but that still heats a stagnant primary loop. On warm days 1 kW is surplus for hours; on any day a stagnant loop can drift from the 122°F soft cap to the 140°F latch. Demand shutoff powers the miner off in both cases and powers it back on when a zone calls. The miner is the only heat source, so every ambiguous case biases toward heating (fail-warm).
+With every thermostat idle, the demand lockout already clamps the miner to `Power Min` (1 kW), but that still heats a stagnant primary loop. On warm days 1 kW is surplus for hours; on any day a stagnant loop can drift from the 122°F soft cap to the 140°F latch. Demand shutoff powers the miner off in both cases and powers it back on when a zone calls. The miner is the primary heat for the monitored zones, so every ambiguous case biases toward heating (fail-warm).
 
 ### Triggers
 

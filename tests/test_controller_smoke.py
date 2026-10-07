@@ -610,3 +610,48 @@ def test_timer_tick_before_first_coordinator_callback_seeds_first(monkeypatch):
         assert all(w >= 4200 for c, w in rig.calls if c == "set_power_limit"), rig.calls
 
     run_async(go())
+
+
+def test_restart_from_own_limit_change_keeps_adjust_interval(monkeypatch):
+    """Regression (2026-10-07): the stop edge of the restart each limit change causes
+    zeroed the throttle clock, so a 1800 s min_adjust_interval still actuated every
+    ~630 s (boot hold + one tick) and the loop cycled 2000 ↔ 4200 W."""
+    rig = Rig(
+        monkeypatch,
+        **{
+            const.CONF_PID_MIN_ADJUST_INTERVAL: 1800,
+            const.CONF_PID_MIN_ADJUST_INTERVAL_INCREASE: 1800,
+            const.CONF_PID_DEMAND_SHUTOFF_MODE: "off",
+        },
+    )
+    rig.mining(True, limit=3000)
+    rig.coord.data["uptime"] = 86400
+
+    async def go():
+        await rig.setup()
+        await rig.tick()
+        rig.set_supply(80.0)  # far below target: the PID wants more power
+        for _ in range(20):
+            await rig.tick()
+            if rig.calls:
+                break
+        limits = [(c, w) for c, w in rig.calls if c == "set_power_limit"]
+        assert len(limits) == 1, rig.calls
+        first_at = rig.clock.t
+
+        # The restart that limit change causes: one poll not mining, then booting.
+        rig.mining(False, limit=0)
+        rig.coord.data["uptime"] = 0
+        await rig.tick(15)
+        rig.mining(True, limit=limits[0][1])
+        await rig.tick(15)
+
+        rig.set_supply(115.0)  # now far above target: the PID wants less power
+        while rig.clock.t - first_at < 1800 - 30:
+            await rig.tick()
+            rig.coord.data["uptime"] = rig.coord.data.get("uptime", 0) + 30
+        assert len([1 for c, _ in rig.calls if c == "set_power_limit"]) == 1, rig.calls
+        await rig.run(2)
+        assert len([1 for c, _ in rig.calls if c == "set_power_limit"]) == 2, rig.calls
+
+    run_async(go())

@@ -591,10 +591,17 @@ class WhatsminerController:
                 self._pid.clear_samples()
                 self._pid.integral = 0.0
                 self._last_input_time = None
-                self._last_commanded_power = None
-                self._last_command_time = 0.0
                 self._ramped_target = None
-                _LOGGER.info("Mining stopped — PID controller state reset")
+                if self._recently_sent_limit() is None:
+                    self._last_commanded_power = None
+                    self._last_command_time = 0.0
+                    _LOGGER.info("Mining stopped — PID controller state reset")
+                else:
+                    # The restart every adjust_power_limit causes. Zeroing the
+                    # throttle clock here capped min_adjust_interval at the boot
+                    # hold (2026-10-07: a 1800 s interval still actuated every
+                    # ~630 s, cycling 2000 ↔ 4200 W).
+                    _LOGGER.info("Mining stopped after our limit change — throttle clock kept")
             else:
                 # Whatever started it (our resume, firmware auto-start, web UI),
                 # it is booting now: no limit change for the boot hold. A start

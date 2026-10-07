@@ -439,13 +439,19 @@ class WhatsminerController:
 
     @callback
     def _handle_timer(self, _now: datetime) -> None:
-        """Fallback tick when the coordinator has gone quiet (miner unreachable)."""
+        """Fallback tick when the coordinator has gone quiet (miner unreachable).
+
+        Routed through the coordinator handler, not straight to the step: at
+        startup the timer can fire before the coordinator's first callback,
+        and a step before the bumpless-transfer seed runs the PID on Kp·error
+        alone (2026-10-07: 4200 → 2437 W on a cold loop, one wasted restart).
+        """
         if self._step_lock.locked():
             return
         if time() - self._last_tick_at < self._tick_interval_s * 0.9:
             return
         _LOGGER.debug("Timer-driven control tick (coordinator quiet)")
-        self._step_task = self.hass.async_create_task(self._run_control_step())
+        self._handle_coordinator_update()
 
     def _store_data(self) -> dict[str, Any]:
         return {

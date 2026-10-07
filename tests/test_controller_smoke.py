@@ -140,6 +140,13 @@ class Rig:
         await asyncio.gather(*self.hass.tasks)
         self.hass.tasks.clear()
 
+    async def timer_tick(self, advance_s=30.0):
+        """The fallback timer, as HA fires it while the coordinator is quiet."""
+        self.clock.t += advance_s
+        self.ctl._handle_timer(None)
+        await asyncio.gather(*self.hass.tasks)
+        self.hass.tasks.clear()
+
     async def run(self, minutes, step_s=30.0):
         n = int(minutes * MIN / step_s)
         for _ in range(n):
@@ -582,5 +589,24 @@ def test_degraded_setup_resumes_owned_stop(monkeypatch):
         await rig.tick()
         await rig.tick()
         assert rig.calls == [("power_on", None)]
+
+    run_async(go())
+
+
+def test_timer_tick_before_first_coordinator_callback_seeds_first(monkeypatch):
+    """Regression (2026-10-07): the fallback timer fired before the coordinator's first
+    callback and the unseeded PID commanded Kp·error — 4200 → 2437 W on a cold loop."""
+    rig = Rig(monkeypatch)
+    rig.mining(True, limit=4200)
+    rig.coord.data["uptime"] = 86400
+
+    async def go():
+        await rig.setup()
+        rig.set_supply(82.0)  # 22°F below target: Kp·error alone is ~2440 W
+        await rig.timer_tick()
+        assert rig.calls == [], rig.calls
+        assert abs(rig.pid_state["requested_output"] - 4200) <= 5  # seeded to the running limit
+        await rig.tick()
+        assert all(w >= 4200 for c, w in rig.calls if c == "set_power_limit"), rig.calls
 
     run_async(go())

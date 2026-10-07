@@ -19,8 +19,10 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
-    CONF_DEFAULT_POWER_LIMIT,
     CONF_EXTERNAL_TEMP_SENSOR,
+    CONF_FREEZE_GUARD_FORECAST_HOURS,
+    CONF_FREEZE_GUARD_SENSOR,
+    CONF_FREEZE_GUARD_THRESHOLD,
     CONF_PID_INTEGRAL_BAND,
     CONF_PID_KD,
     CONF_PID_KE,
@@ -28,10 +30,16 @@ from .const import (
     CONF_PID_KP,
     CONF_PID_COARSE_STEP_BAND,
     CONF_PID_DEMAND_ENTITIES,
-    CONF_PID_DEMAND_MODE,
-    CONF_PID_DEMAND_FLOOR_FRAC,
-    CONF_PID_DEMAND_CEILING_FRAC,
-    CONF_PID_DEMAND_WEIGHT_BY_ERROR,
+    CONF_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
+    CONF_PID_DEMAND_SHUTOFF_HYSTERESIS,
+    CONF_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN,
+    CONF_PID_DEMAND_SHUTOFF_MIN_OFF_MIN,
+    CONF_PID_DEMAND_SHUTOFF_MIN_ON_MIN,
+    CONF_PID_DEMAND_SHUTOFF_MODE,
+    CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN,
+    CONF_PID_DEMAND_SHUTOFF_SUPPLY_DWELL_MIN,
+    CONF_PID_DEMAND_SHUTOFF_SUPPLY_STOP,
+    CONF_PID_DEMAND_SHUTOFF_UNKNOWN_GRACE_MIN,
     CONF_PID_FALLBACK_OUTDOOR_COLD,
     CONF_PID_FALLBACK_OUTDOOR_WARM,
     CONF_PID_FORECAST_BLEND,
@@ -58,7 +66,8 @@ from .const import (
     CONF_POWER_MAX,
     CONF_POWER_MIN,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
-    DEFAULT_DEFAULT_POWER_LIMIT,
+    DEFAULT_FREEZE_GUARD_FORECAST_HOURS,
+    DEFAULT_FREEZE_GUARD_THRESHOLD,
     DEFAULT_PASSWORD,
     DEFAULT_PID_INTEGRAL_BAND,
     DEFAULT_PID_KD,
@@ -67,10 +76,16 @@ from .const import (
     DEFAULT_PID_KP,
     DEFAULT_PID_COARSE_STEP_BAND,
     DEFAULT_PID_DEMAND_ENTITIES,
-    DEFAULT_PID_DEMAND_MODE,
-    DEFAULT_PID_DEMAND_FLOOR_FRAC,
-    DEFAULT_PID_DEMAND_CEILING_FRAC,
-    DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR,
+    DEFAULT_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
+    DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS,
+    DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN,
+    DEFAULT_PID_DEMAND_SHUTOFF_MIN_OFF_MIN,
+    DEFAULT_PID_DEMAND_SHUTOFF_MIN_ON_MIN,
+    DEFAULT_PID_DEMAND_SHUTOFF_MODE,
+    DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN,
+    DEFAULT_PID_DEMAND_SHUTOFF_SUPPLY_DWELL_MIN,
+    DEFAULT_PID_DEMAND_SHUTOFF_SUPPLY_STOP,
+    DEFAULT_PID_DEMAND_SHUTOFF_UNKNOWN_GRACE_MIN,
     DEFAULT_PID_FALLBACK_OUTDOOR_COLD,
     DEFAULT_PID_FALLBACK_OUTDOOR_WARM,
     DEFAULT_PID_FINE_STEP_BAND,
@@ -90,6 +105,7 @@ from .const import (
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
     DEFAULT_SCAN_INTERVAL,
+    DEMAND_SHUTOFF_MODES,
     DOMAIN,
 )
 from .coordinator import WhatsminerAPI
@@ -124,7 +140,7 @@ def _get_current_values(config_entry: config_entries.ConfigEntry) -> dict[str, A
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Whatsminer."""
 
-    VERSION = 3
+    VERSION = 4
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -256,12 +272,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_PID_KD,
                         default=self._current_data.get(CONF_PID_KD, DEFAULT_PID_KD),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=5000)),
-                    vol.Optional(
-                        CONF_DEFAULT_POWER_LIMIT,
-                        default=self._current_data.get(
-                            CONF_DEFAULT_POWER_LIMIT, DEFAULT_DEFAULT_POWER_LIMIT
-                        ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
                 }
             ),
         )
@@ -305,9 +315,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_demand(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 3: Demand entities, mode, envelope."""
+        """Step 3: Demand entities, demand shutoff, freeze guard."""
         if user_input is not None:
-            self._current_data.update(user_input)
+            self._update_current(user_input, (CONF_FREEZE_GUARD_SENSOR,))
             return await self.async_step_feedforward()
 
         return self.async_show_form(
@@ -323,29 +333,99 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         EntitySelectorConfig(domain="climate", multiple=True)
                     ),
                     vol.Optional(
-                        CONF_PID_DEMAND_MODE,
+                        CONF_PID_DEMAND_SHUTOFF_MODE,
                         default=self._current_data.get(
-                            CONF_PID_DEMAND_MODE, DEFAULT_PID_DEMAND_MODE
+                            CONF_PID_DEMAND_SHUTOFF_MODE, DEFAULT_PID_DEMAND_SHUTOFF_MODE
                         ),
-                    ): vol.In(["lockout", "envelope"]),
+                    ): vol.In(DEMAND_SHUTOFF_MODES),
                     vol.Optional(
-                        CONF_PID_DEMAND_FLOOR_FRAC,
+                        CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN,
                         default=self._current_data.get(
-                            CONF_PID_DEMAND_FLOOR_FRAC, DEFAULT_PID_DEMAND_FLOOR_FRAC
+                            CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN,
+                            DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN,
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-40, max=100)),
                     vol.Optional(
-                        CONF_PID_DEMAND_CEILING_FRAC,
+                        CONF_PID_DEMAND_SHUTOFF_HYSTERESIS,
                         default=self._current_data.get(
-                            CONF_PID_DEMAND_CEILING_FRAC, DEFAULT_PID_DEMAND_CEILING_FRAC
+                            CONF_PID_DEMAND_SHUTOFF_HYSTERESIS,
+                            DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS,
                         ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=15)),
                     vol.Optional(
-                        CONF_PID_DEMAND_WEIGHT_BY_ERROR,
+                        CONF_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN,
                         default=self._current_data.get(
-                            CONF_PID_DEMAND_WEIGHT_BY_ERROR, DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR
+                            CONF_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN,
+                            DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=5, max=240)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_SHUTOFF_MIN_OFF_MIN,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_SHUTOFF_MIN_OFF_MIN,
+                            DEFAULT_PID_DEMAND_SHUTOFF_MIN_OFF_MIN,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=240)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_SHUTOFF_MIN_ON_MIN,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_SHUTOFF_MIN_ON_MIN,
+                            DEFAULT_PID_DEMAND_SHUTOFF_MIN_ON_MIN,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=240)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_SHUTOFF_SUPPLY_STOP,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_SHUTOFF_SUPPLY_STOP,
+                            DEFAULT_PID_DEMAND_SHUTOFF_SUPPLY_STOP,
                         ),
                     ): bool,
+                    vol.Optional(
+                        CONF_PID_DEMAND_SHUTOFF_SUPPLY_DWELL_MIN,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_SHUTOFF_SUPPLY_DWELL_MIN,
+                            DEFAULT_PID_DEMAND_SHUTOFF_SUPPLY_DWELL_MIN,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_SHUTOFF_UNKNOWN_GRACE_MIN,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_SHUTOFF_UNKNOWN_GRACE_MIN,
+                            DEFAULT_PID_DEMAND_SHUTOFF_UNKNOWN_GRACE_MIN,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
+                    vol.Optional(
+                        CONF_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
+                        default=self._current_data.get(
+                            CONF_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
+                            DEFAULT_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
+                    vol.Optional(
+                        CONF_FREEZE_GUARD_SENSOR,
+                        description={
+                            "suggested_value": self._current_data.get(
+                                CONF_FREEZE_GUARD_SENSOR
+                            )
+                        },
+                    ): EntitySelector(
+                        EntitySelectorConfig(
+                            domain="sensor", device_class="temperature"
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_FREEZE_GUARD_THRESHOLD,
+                        default=self._current_data.get(
+                            CONF_FREEZE_GUARD_THRESHOLD, DEFAULT_FREEZE_GUARD_THRESHOLD
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=-40, max=100)),
+                    vol.Optional(
+                        CONF_FREEZE_GUARD_FORECAST_HOURS,
+                        default=self._current_data.get(
+                            CONF_FREEZE_GUARD_FORECAST_HOURS,
+                            DEFAULT_FREEZE_GUARD_FORECAST_HOURS,
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=48)),
                 }
             ),
         )

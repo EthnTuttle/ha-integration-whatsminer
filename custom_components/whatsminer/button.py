@@ -27,7 +27,7 @@ async def async_setup_entry(
 class WhatsminerResetLockoutButton(CoordinatorEntity, ButtonEntity):
     """Clear the latched supply-temperature lockout.
 
-    The PID switch owns the latch and refuses the reset unless the supply
+    The controller owns the latch and refuses the reset unless the supply
     probe reads below the soft safety cap.
     """
 
@@ -61,7 +61,7 @@ class WhatsminerResetLockoutButton(CoordinatorEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Reset the lockout latch."""
-        pid_switch = self._data.get("pid_switch")
-        if pid_switch is None:
-            raise HomeAssistantError("PID switch is not set up yet")
-        await pid_switch.async_reset_lockout()
+        controller = self._data.get("controller")
+        if controller is None:
+            raise HomeAssistantError("Controller is not set up yet")
+        await controller.async_reset_lockout()

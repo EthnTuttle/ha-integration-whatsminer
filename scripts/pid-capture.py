@@ -3,14 +3,18 @@
 
 Usage:
     HA='http://homeassistant.local:8123' TOKEN='...' \\
-        ./scripts/pid-capture.py [--minutes N] [--external ENTITY_ID] [--slug heatcore]
+        ./scripts/pid-capture.py [--minutes N] [--external ENTITY_ID] [--slug heatcore] \\
+            [--demand climate.x ...] [--weather weather.forecast_home]
 
 Output:
     pid-run-YYYYMMDD-HHMMSS.json  — one file containing:
         - metadata (slug, external sensor, window, timestamps)
-        - current states of all relevant entities (target temp, PID internals, etc.)
-        - config-entry options if the WS API is reachable (Kp/Ki/Kd/interval/step)
-        - history window for all captured series
+        - current states of all relevant entities (target temp, PID internals,
+          control mode, demand shutoff state, freeze guard, etc.)
+        - config-entry options if the WS API is reachable (Kp/Ki/Kd/interval/step,
+          demand shutoff and freeze guard settings)
+        - history window for all captured series, including the configured
+          climate (demand) entities and the weather entity
 
 Paste the file in chat. That's it — no other values to copy.
 """
@@ -23,6 +27,18 @@ import os
 import sys
 import urllib.parse
 import urllib.request
+
+
+# Used when neither --demand nor the config entry (WS API) yields any climate
+# entities, so a capture always carries the thermostat timelines the demand
+# shutoff analysis needs.
+DEFAULT_DEMAND_ENTITIES = [
+    "climate.den",
+    "climate.great_room",
+    "climate.back_bedroom",
+    "climate.windowed_bedroom",
+]
+DEFAULT_WEATHER_ENTITY = "weather.forecast_home"
 
 
 def env(name: str) -> str:
@@ -103,7 +119,14 @@ def main() -> int:
         action="append",
         default=[],
         help="climate entity_id to capture as demand input (repeatable; "
-             "auto-pulled from config-entry options if WS API is reachable)",
+             "auto-pulled from config-entry options if WS API is reachable; "
+             f"falls back to {', '.join(DEFAULT_DEMAND_ENTITIES)})",
+    )
+    ap.add_argument(
+        "--weather",
+        default=os.environ.get("WEATHER_ENTITY", DEFAULT_WEATHER_ENTITY),
+        help=f"weather entity_id to capture (default {DEFAULT_WEATHER_ENTITY}; "
+             "pass an empty string to skip)",
     )
     args = ap.parse_args()
 
@@ -135,13 +158,20 @@ def main() -> int:
         f"sensor.{slug}_pid_out_max_effective",
         f"sensor.{slug}_pid_pv_slope",
         f"number.{slug}_pid_target_temperature",
-        f"switch.{slug}_pid_mode",
+        f"sensor.{slug}_control_mode",
+        f"sensor.{slug}_demand_shutoff_state",
+        f"sensor.{slug}_outdoor_24h_mean",
         f"switch.{slug}_mining_control",
         f"binary_sensor.{slug}_pid_safety_engaged",
+        f"binary_sensor.{slug}_demand_shutoff",
+        f"binary_sensor.{slug}_freeze_guard",
         f"binary_sensor.{slug}_mining_status",
     ]
     if external:
         base.append(external)
+    weather = args.weather.strip() if args.weather else ""
+    if weather:
+        base.append(weather)
 
     # Config entry options (best-effort) — fetched here so we can also pull
     # the configured demand entities and capture their history alongside.
@@ -153,12 +183,17 @@ def main() -> int:
         cfg_demand = list(opts.get("pid_demand_entities") or data.get("pid_demand_entities") or [])
 
     demand_entities = list(dict.fromkeys(args.demand + cfg_demand))  # de-dup, preserve order
+    demand_source = "args/config"
+    if not demand_entities:
+        demand_entities = list(DEFAULT_DEMAND_ENTITIES)
+        demand_source = "default list"
     base.extend(demand_entities)
 
     print(f"Window:   {start_s}  →  {end_s}  ({args.minutes} min)")
     print(f"Miner:    {slug}")
     print(f"External: {external or '(none)'}")
-    print(f"Demand:   {', '.join(demand_entities) if demand_entities else '(none)'}")
+    print(f"Weather:  {weather or '(none)'}")
+    print(f"Demand:   {', '.join(demand_entities)}  [{demand_source}]")
 
     # Current states
     states = http_get_json(f"{ha}/api/states", token)
@@ -171,7 +206,7 @@ def main() -> int:
     elif "_error" in cfg:
         print(f"Config:   WS API failed ({cfg['_error']})")
     else:
-        print("Config:   captured Kp/Ki/Kd + throttle + demand options via WS API")
+        print("Config:   captured Kp/Ki/Kd + throttle + demand shutoff + freeze guard options via WS API")
 
     # History
     ent_param = urllib.parse.quote(",".join(base), safe=",")
@@ -188,6 +223,7 @@ def main() -> int:
         "window": {"start": start_s, "end": end_s, "minutes": args.minutes},
         "miner_slug": slug,
         "external_sensor": external,
+        "weather_entity": weather or None,
         "demand_entities": demand_entities,
         "config_entry": cfg,
         "current_states": current,

@@ -18,6 +18,9 @@ CONF_PASSWORD = "password"
 CONF_PORT = "port"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_NAME = "name"
+# MAC cached in entry.data after the first successful poll, so the entry can
+# set up in a degraded state while the miner is unreachable.
+CONF_MAC = "mac"
 CONF_POWER_MIN = "power_min"
 CONF_POWER_MAX = "power_max"
 CONF_PID_KP = "pid_kp"
@@ -27,7 +30,6 @@ CONF_PID_KE = "pid_ke"
 CONF_PID_TARGET_TEMP = "pid_target_temp"
 CONF_EXTERNAL_TEMP_SENSOR = "external_temp_sensor"
 CONF_PID_OUTDOOR_TEMP_SENSOR = "pid_outdoor_temp_sensor"
-CONF_DEFAULT_POWER_LIMIT = "default_power_limit"
 CONF_PID_MIN_POWER_STEP = "pid_min_power_step"
 CONF_PID_MIN_POWER_STEP_MEDIUM = "pid_min_power_step_medium"
 CONF_PID_MIN_POWER_STEP_FINE = "pid_min_power_step_fine"
@@ -39,10 +41,6 @@ CONF_CHIP_TEMP_SAFETY_CAP = "chip_temp_safety_cap"
 CONF_PID_SUPPLY_TEMP_SAFETY_CAP = "pid_supply_temp_safety_cap"
 CONF_PID_SUPPLY_TEMP_LOCKOUT = "pid_supply_temp_lockout"
 CONF_PID_DEMAND_ENTITIES = "pid_demand_entities"
-CONF_PID_DEMAND_MODE = "pid_demand_mode"
-CONF_PID_DEMAND_FLOOR_FRAC = "pid_demand_floor_frac"
-CONF_PID_DEMAND_CEILING_FRAC = "pid_demand_ceiling_frac"
-CONF_PID_DEMAND_WEIGHT_BY_ERROR = "pid_demand_weight_by_error"
 CONF_PID_INTEGRAL_BAND = "pid_integral_band"
 CONF_PID_SETPOINT_RAMP_RATE = "pid_setpoint_ramp_rate"
 CONF_PID_PRICE_SENSOR = "pid_price_sensor"
@@ -57,6 +55,31 @@ CONF_PID_FORECAST_BLEND = "pid_forecast_blend"
 CONF_PID_SLOPE_EWMA_TAU_S = "pid_slope_ewma_tau_s"
 CONF_PID_FALLBACK_OUTDOOR_COLD = "pid_fallback_outdoor_cold"
 CONF_PID_FALLBACK_OUTDOOR_WARM = "pid_fallback_outdoor_warm"
+# Demand shutoff (power the miner off when every thermostat is idle)
+CONF_PID_DEMAND_SHUTOFF_MODE = "pid_demand_shutoff_mode"
+CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = "pid_demand_shutoff_outdoor_min"
+CONF_PID_DEMAND_SHUTOFF_HYSTERESIS = "pid_demand_shutoff_hysteresis"
+CONF_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = "pid_demand_shutoff_idle_dwell_min"
+CONF_PID_DEMAND_SHUTOFF_MIN_OFF_MIN = "pid_demand_shutoff_min_off_min"
+CONF_PID_DEMAND_SHUTOFF_MIN_ON_MIN = "pid_demand_shutoff_min_on_min"
+CONF_PID_DEMAND_SHUTOFF_SUPPLY_STOP = "pid_demand_shutoff_supply_stop"
+CONF_PID_DEMAND_SHUTOFF_SUPPLY_DWELL_MIN = "pid_demand_shutoff_supply_dwell_min"
+CONF_PID_DEMAND_SHUTOFF_UNKNOWN_GRACE_MIN = "pid_demand_shutoff_unknown_grace_min"
+CONF_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA = "pid_demand_shutoff_cold_room_delta"
+# Freeze guard for the miner's outdoor coolant loop
+CONF_FREEZE_GUARD_SENSOR = "freeze_guard_sensor"
+CONF_FREEZE_GUARD_THRESHOLD = "freeze_guard_threshold"
+CONF_FREEZE_GUARD_FORECAST_HOURS = "freeze_guard_forecast_hours"
+
+# Option keys dropped in config-entry version 4 (PID-only refactor). Kept so
+# async_migrate_entry can strip them from stored data/options.
+REMOVED_OPTION_KEYS_V4: tuple[str, ...] = (
+    "default_power_limit",
+    "pid_demand_mode",
+    "pid_demand_floor_frac",
+    "pid_demand_ceiling_frac",
+    "pid_demand_weight_by_error",
+)
 
 # Defaults
 DEFAULT_PORT = 4028
@@ -94,9 +117,6 @@ DEFAULT_PID_KD = 55.56
 DEFAULT_PID_KE = 0.0
 DEFAULT_PID_TARGET_TEMP = 167.0  # °F, a reasonable external-target starting point (= 75°C)
 DEFAULT_PID_OUTDOOR_TEMP_SENSOR = None
-# Applied when PID Mode is turned off — avoids leaving the miner stuck at the
-# last wattage the PID commanded. Defaults to power_max (full tilt).
-DEFAULT_DEFAULT_POWER_LIMIT = DEFAULT_POWER_MAX
 # Belt-and-suspenders over the miner's own firmware thermal protection: if the
 # chip-temp average crosses this threshold, the PID is overridden to power_min
 # regardless of what the external-sensor loop wants. Chip temp is NOT a PID
@@ -111,17 +131,13 @@ DEFAULT_CHIP_TEMP_SAFETY_CAP = 185.0  # °F (= 85°C)
 #            cap couldn't hold and the operator should review.
 DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP = 122.0  # °F (= 50°C)
 DEFAULT_PID_SUPPLY_TEMP_LOCKOUT = 140.0  # °F (= 60°C)
-# Demand-driven lockout: when these climate entities are all idle (none with
+# Demand lockout: when every one of these climate entities is idle (none with
 # hvac_action == "heating"), force power_min and engage the safety binary
-# sensor. Empty list disables the feature entirely. Recoverable: the loop
+# sensor. With no thermostat calling, the zone pumps are off and the primary
+# loop is stagnant, so there is no flow to dissipate power into. Empty list
+# disables demand handling (lockout and demand shutoff). Recoverable: the loop
 # auto-resumes when any entity transitions back to "heating".
 DEFAULT_PID_DEMAND_ENTITIES: list[str] = []
-# Demand mode: "lockout" = binary (any heating = full power, none = power_min)
-#              "envelope" = continuous (scale output bounds by demand index)
-DEFAULT_PID_DEMAND_MODE = "lockout"
-DEFAULT_PID_DEMAND_FLOOR_FRAC = 0.0
-DEFAULT_PID_DEMAND_CEILING_FRAC = 1.0
-DEFAULT_PID_DEMAND_WEIGHT_BY_ERROR = False
 # Integral is only frozen when |SP − PV| > this band AND the output has hit a
 # saturation rail (out_min/out_max). Outside the band but with actuator
 # headroom, integration continues — that's the disturbance-recovery case where
@@ -147,6 +163,45 @@ DEFAULT_PID_SLOPE_EWMA_TAU_S = 0.0
 DEFAULT_PID_FALLBACK_OUTDOOR_COLD = 10.0  # °F
 DEFAULT_PID_FALLBACK_OUTDOOR_WARM = 60.0  # °F
 
+# Demand shutoff. Two stop triggers, both requiring every thermostat idle:
+#   W (warm gate): the centred 24 h outdoor mean is at/above OUTDOOR_MIN, so
+#      1 kW is surplus and idle periods last hours. Dwell IDLE_DWELL_MIN.
+#   S (supply overheat): supply at/above the soft cap at any outdoor temp. The
+#      stagnant primary loop is being heated at power_min and would drift to
+#      the 140°F latch. Dwell SUPPLY_DWELL_MIN; bypasses MIN_ON.
+# OUTDOOR_MIN 58°F: bottom of the measured "1 kW is sufficient" band (60-62°F
+# at spring setpoints, shifted down for this season's lower setpoints) and the
+# middle of the physics crossover band for a 1600 sq ft slab. Recalibrate from
+# observe-mode data. There is no backup heat source, so every ambiguous case
+# biases toward heating (fail-warm).
+DEMAND_SHUTOFF_MODES = ["off", "observe", "active"]
+DEFAULT_PID_DEMAND_SHUTOFF_MODE = "off"
+DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = 58.0  # °F, centred 24 h mean
+DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS = 4.0  # °F
+DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = 30
+DEFAULT_PID_DEMAND_SHUTOFF_MIN_OFF_MIN = 30
+DEFAULT_PID_DEMAND_SHUTOFF_MIN_ON_MIN = 60
+DEFAULT_PID_DEMAND_SHUTOFF_SUPPLY_STOP = True
+DEFAULT_PID_DEMAND_SHUTOFF_SUPPLY_DWELL_MIN = 10
+DEFAULT_PID_DEMAND_SHUTOFF_UNKNOWN_GRACE_MIN = 20
+DEFAULT_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA = 1.5  # °F below setpoint counts as calling
+
+# Freeze guard. The M64's own coolant loop runs outdoors and can freeze while
+# the miner is stopped. When the freeze source reads at/below THRESHOLD, every
+# stop trigger (W, S and the supply lockout latch) is blocked and a stop we own
+# is resumed at once. Source priority: the dedicated loop/outdoor probe, else
+# min(current outdoor temperature, forecast minimum over FORECAST_HOURS). With
+# no source at all, stops are blocked unless the warm gate is armed.
+# 40°F assumes plain water coolant (freezes at 32°F) plus margin for a probe
+# that reads warmer than the coldest exposed fitting and for radiative cooling
+# below air temperature on clear nights. Lower it if the loop holds glycol.
+DEFAULT_FREEZE_GUARD_SENSOR = None
+DEFAULT_FREEZE_GUARD_THRESHOLD = 40.0  # °F
+DEFAULT_FREEZE_GUARD_FORECAST_HOURS = 12
+# Release the freeze condition only this far above the threshold (°F) so a
+# stop/resume can't flap around the line.
+FREEZE_GUARD_RELEASE_HYSTERESIS = 3.0
+
 # Units
 TERA_HASH_PER_SECOND = "TH/s"
 JOULES_PER_TERA_HASH = "J/TH"
@@ -168,3 +223,17 @@ SENSOR_REJECTED = "rejected"
 
 # Binary sensor keys
 BINARY_SENSOR_MINING = "is_mining"
+
+# Enum values published by the controller
+CONTROL_MODES = [
+    "pid",            # closed loop on the supply probe
+    "fallback",       # probe lost: open-loop outdoor-reset curve
+    "demand_lockout", # all thermostats idle: clamped to power_min
+    "safety_cap",     # chip or supply soft cap forcing power_min
+    "dwell",          # shutoff dwell running (still clamped to power_min)
+    "stopped",        # demand shutoff owns a stop
+    "resuming",       # power_on sent, waiting for hashing
+    "latched",        # supply lockout latched
+    "idle",           # miner not mining and we did not stop it
+]
+SHUTOFF_STATES = ["disabled", "running", "dwell", "stopped", "resuming", "suppressed"]

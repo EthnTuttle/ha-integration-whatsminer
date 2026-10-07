@@ -6,10 +6,13 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT, CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_EXTERNAL_TEMP_SENSOR,
+    CONF_MAC,
     CONF_PID_COARSE_STEP_BAND,
     CONF_PID_FINE_STEP_BAND,
     CONF_PID_INTEGRAL_BAND,
@@ -25,8 +28,10 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
+    REMOVED_OPTION_KEYS_V4,
 )
-from .coordinator import WhatsminerCoordinator
+from .controller import WhatsminerController
+from .coordinator import DEFAULT_DATA, WhatsminerCoordinator
 from .unit_helpers import c_to_f
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,39 +65,63 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name=name,
     )
 
-    # Perform initial data fetch
-    await coordinator.async_config_entry_first_refresh()
-
-    def _opt(key: str, default):
-        return entry.options.get(key, entry.data.get(key, default))
-
-    if not _opt(CONF_EXTERNAL_TEMP_SENSOR, None):
+    # Perform initial data fetch. If the miner doesn't answer and we have seen
+    # it before, set up anyway in a degraded state: the controller may own a
+    # stop that only it can release, and a miner that is powered off may not
+    # answer the API at all. Entities stay unavailable until a poll succeeds.
+    cached_mac = entry.data.get(CONF_MAC)
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        if not cached_mac:
+            raise
         _LOGGER.warning(
-            "PID Mode requires an external temperature sensor — open the "
-            "integration's Configure dialog and pick one before enabling PID Mode"
+            "Miner at %s is unreachable — setting up in degraded mode with the cached "
+            "MAC so the controller can resume a stopped miner",
+            miner_ip,
+        )
+        coordinator.seed_offline(cached_mac, miner_ip, {**DEFAULT_DATA})
+    else:
+        mac = coordinator.data.get("mac")
+        if mac and mac != cached_mac:
+            hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_MAC: mac})
+
+    # Options override initial setup data; consumers apply their own defaults.
+    config = {**entry.data, **entry.options}
+
+    if not config.get(CONF_EXTERNAL_TEMP_SENSOR):
+        _LOGGER.warning(
+            "No supply temperature sensor is configured — the controller runs on "
+            "the outdoor-reset fallback curve until one is set in Configure"
         )
 
-    # Store coordinator and config for platforms to use. pid_state is a mutable
-    # dict shared between the PID Mode switch (writer) and the diagnostic PID
-    # sensors (readers) so both platforms see the same numbers on each tick.
+    # pid_state is a mutable dict shared between the controller (writer) and
+    # the diagnostic sensors (readers) so both see the same numbers each tick.
+    pid_state: dict = {
+        "error": None,
+        "proportional": None,
+        "integral": None,
+        "derivative": None,
+        "external": None,
+        "output": None,             # actuated (what we commanded)
+        "requested_output": None,   # pre-clamp PID desire
+        "target": None,
+        "safety_engaged": False,
+        "lockout_latched": False,   # supply lockout; restored by the controller
+        "demand_index": None,
+        "control_mode": "idle",
+        "demand_shutoff": {},
+        "freeze_guard": {},
+        "outdoor_mean": None,
+    }
+    controller = WhatsminerController(hass, entry, coordinator, pid_state, config)
+    await controller.async_setup()
+
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": coordinator,
-        # Options override initial setup data; consumers apply their own defaults.
-        "config": {**entry.data, **entry.options},
-        "pid_state": {
-            "error": None,
-            "proportional": None,
-            "integral": None,
-            "derivative": None,
-            "external": None,
-            "output": None,             # actuated (what we commanded)
-            "requested_output": None,   # pre-clamp PID desire
-            "target": None,
-            "enabled": False,
-            "safety_engaged": False,
-            "lockout_latched": False,   # supply lockout; restored by the PID switch
-            "demand_index": None,
-        },
+        "config": config,
+        "pid_state": pid_state,
+        "controller": controller,
     }
 
     # Set up platforms
@@ -109,7 +138,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        data = hass.data[DOMAIN].pop(entry.entry_id)
+        controller: WhatsminerController | None = data.get("controller")
+        if controller is not None:
+            await controller.async_unload()
 
     return unload_ok
 
@@ -145,12 +177,7 @@ _GAIN_KEYS_C_TO_F: tuple[str, ...] = (
 
 
 def _migrate_dict_celsius_to_fahrenheit(values: dict) -> dict:
-    """Return a copy of ``values`` with temperature/delta/gain keys converted.
-
-    Used by ``async_migrate_entry`` to walk both ``entry.data`` and
-    ``entry.options`` in lockstep, so a key stored on initial setup (``data``)
-    or later edited in the options flow (``options``) gets the same treatment.
-    """
+    """Return a copy of ``values`` with temperature/delta/gain keys converted."""
     out = dict(values)
     for key in _TEMPERATURE_KEYS_C_TO_F:
         if key in out and out[key] is not None:
@@ -164,17 +191,29 @@ def _migrate_dict_celsius_to_fahrenheit(values: dict) -> dict:
     return out
 
 
+def _strip_keys(values: dict, keys: tuple[str, ...]) -> dict:
+    return {k: v for k, v in values.items() if k not in keys}
+
+
+# Entities removed in v4: (domain, unique_id suffix)
+_REMOVED_ENTITIES_V4: tuple[tuple[str, str], ...] = (
+    ("switch", "_pid_mode"),
+    ("number", "_power_limit"),
+)
+
+
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate Whatsminer config entries between schema versions.
 
-    v1 → v2: integration switches from internal Celsius to internal Fahrenheit.
-    All temperature absolutes, deltas/rates, and W/°C gains are converted in
-    place so existing user tuning survives the unit change with no behavior
-    change. The migration is idempotent on re-runs (only fires when the stored
-    version is < ConfigFlow.VERSION).
+    v1 → v2: internal Celsius to internal Fahrenheit. All temperature
+    absolutes, deltas/rates and W/°C gains are converted in place.
 
-    v2 → v3: adds new optional config keys (envelope, feedforward placeholders).
-    No data transformation needed - all new keys are Optional additions.
+    v2 → v3: new optional keys only (envelope, feedforward); no data change.
+
+    v3 → v4: PID-only refactor. The PID Mode switch, the Power Limit number,
+    the default power limit and the demand envelope mode are gone. Their
+    option keys are dropped from data and options and the orphaned entity
+    registry entries are removed so they don't linger as "restored".
     """
     _LOGGER.info(
         "Considering migration for Whatsminer entry %s (version %s)",
@@ -187,14 +226,21 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(
             entry, data=new_data, options=new_options, version=2
         )
-        _LOGGER.info(
-            "Whatsminer entry %s migrated v1 → v2 (Celsius → Fahrenheit)",
-            entry.entry_id,
-        )
+        _LOGGER.info("Whatsminer entry %s migrated v1 → v2 (Celsius → Fahrenheit)", entry.entry_id)
     if entry.version == 2:
         hass.config_entries.async_update_entry(entry, version=3)
-        _LOGGER.info(
-            "Whatsminer entry %s migrated v2 → v3 (multi-step options flow)",
-            entry.entry_id,
+        _LOGGER.info("Whatsminer entry %s migrated v2 → v3 (multi-step options flow)", entry.entry_id)
+    if entry.version == 3:
+        new_data = _strip_keys(entry.data, REMOVED_OPTION_KEYS_V4)
+        new_options = _strip_keys(entry.options, REMOVED_OPTION_KEYS_V4)
+        hass.config_entries.async_update_entry(
+            entry, data=new_data, options=new_options, version=4
         )
+        registry = er.async_get(hass)
+        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            for domain, suffix in _REMOVED_ENTITIES_V4:
+                if reg_entry.domain == domain and str(reg_entry.unique_id).endswith(suffix):
+                    _LOGGER.info("Removing retired entity %s", reg_entry.entity_id)
+                    registry.async_remove(reg_entry.entity_id)
+        _LOGGER.info("Whatsminer entry %s migrated v3 → v4 (PID-only controller)", entry.entry_id)
     return True

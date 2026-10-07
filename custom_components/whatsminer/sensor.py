@@ -23,8 +23,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    CONTROL_MODES,
     DOMAIN,
     JOULES_PER_TERA_HASH,
+    SHUTOFF_STATES,
     TERA_HASH_PER_SECOND,
 )
 from .coordinator import WhatsminerCoordinator
@@ -132,9 +134,8 @@ FAN_SENSOR_TYPES: dict[str, SensorEntityDescription] = {
 }
 
 # PID diagnostic sensors — read from the shared pid_state dict populated by
-# the climate entity. Split into "target" (always reports, used for tracking
-# chart) and "internals" (gapped when PID is disabled, so history-graph shows
-# a clean break rather than a misleading flatline).
+# the controller. "target" always reports; the internals are None (a chart
+# gap) whenever the loop isn't computing, e.g. while the miner is stopped.
 PID_TARGET_SENSOR_KEY = "target"
 PID_TARGET_SENSOR = SensorEntityDescription(
     key="pid_target_temp",
@@ -240,7 +241,35 @@ PID_INTERNAL_SENSORS: dict[str, SensorEntityDescription] = {
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:arrow-down-bold",
     ),
+    "outdoor_mean": SensorEntityDescription(
+        key="outdoor_24h_mean",
+        name="Outdoor 24h Mean",
+        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:sun-thermometer-outline",
+    ),
 }
+
+# Controller status enums. Available even while the miner is offline: the
+# state they describe is local, and it matters most while the miner is off.
+CONTROL_MODE_SENSOR = SensorEntityDescription(
+    key="control_mode",
+    name="Control Mode",
+    device_class=SensorDeviceClass.ENUM,
+    options=CONTROL_MODES,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    icon="mdi:state-machine",
+)
+SHUTOFF_STATE_SENSOR = SensorEntityDescription(
+    key="demand_shutoff_state",
+    name="Demand Shutoff State",
+    device_class=SensorDeviceClass.ENUM,
+    options=SHUTOFF_STATES,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    icon="mdi:power-sleep",
+)
 
 
 async def async_setup_entry(
@@ -310,6 +339,8 @@ async def async_setup_entry(
                 always_report=False,
             )
         )
+    entities.append(WhatsminerControlModeSensor(coordinator, pid_state))
+    entities.append(WhatsminerShutoffStateSensor(coordinator, pid_state))
 
     async_add_entities(entities)
 
@@ -485,8 +516,7 @@ class WhatsminerPIDSensor(CoordinatorEntity, SensorEntity):
         self.entity_description = description
         self._pid_state = pid_state
         self._state_key = state_key
-        # always_report=True keeps target visible even when PID is disabled, so
-        # the tracking chart's setpoint line survives OFF/COOL toggles.
+        # Kept for the target sensor, which must never gap.
         self._always_report = always_report
         self._attr_unique_id = f"{coordinator.data['mac']}_{description.key}"
         self._attr_name = description.name
@@ -506,8 +536,6 @@ class WhatsminerPIDSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the latest PID state value, or None to produce a chart gap."""
-        if not self._always_report and not self._pid_state.get("enabled"):
-            return None
         value = self._pid_state.get(self._state_key)
         if isinstance(value, float):
             if self._state_key == "demand_index":
@@ -519,3 +547,94 @@ class WhatsminerPIDSensor(CoordinatorEntity, SensorEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.available and self.coordinator.last_update_success
+
+
+class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
+    """Which layer of the controller is deciding the power limit right now."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: WhatsminerCoordinator, pid_state: dict) -> None:
+        super().__init__(coordinator)
+        self.entity_description = CONTROL_MODE_SENSOR
+        self._pid_state = pid_state
+        self._attr_unique_id = f"{coordinator.data['mac']}_control_mode"
+        self._attr_name = CONTROL_MODE_SENSOR.name
+
+    @property
+    def device_info(self) -> entity.DeviceInfo:
+        """Return device info."""
+        return entity.DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.data["mac"])},
+            name=self.coordinator.name,
+            manufacturer=self.coordinator.data.get("make", "Whatsminer"),
+            model=self.coordinator.data.get("model", "Unknown"),
+            sw_version=self.coordinator.data.get("fw_ver"),
+            configuration_url=f"http://{self.coordinator.data['ip']}",
+        )
+
+    @property
+    def available(self) -> bool:
+        """Local controller state: available even while the miner is offline."""
+        return True
+
+    @property
+    def native_value(self):
+        mode = self._pid_state.get("control_mode")
+        return mode if mode in CONTROL_MODES else "idle"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        shutoff = self._pid_state.get("demand_shutoff") or {}
+        freeze = self._pid_state.get("freeze_guard") or {}
+        return {
+            "supply_lockout_latched": bool(self._pid_state.get("lockout_latched")),
+            "safety_engaged": bool(self._pid_state.get("safety_engaged")),
+            "miner_data_fresh": bool(self.coordinator.last_update_success),
+            "demand_shutoff_mode": shutoff.get("mode"),
+            "demand_shutoff_state": shutoff.get("state"),
+            "demand_shutoff_active": shutoff.get("active"),
+            "demand_shutoff_reason": shutoff.get("reason"),
+            "demand_shutoff_blocking": shutoff.get("blocking"),
+            "demand_shutoff_since": shutoff.get("since"),
+            "demand_shutoff_gate": shutoff.get("gate"),
+            "demand_shutoff_trigger": shutoff.get("trigger"),
+            "demand_shutoff_would_stop": shutoff.get("would_stop"),
+            "demand_shutoff_would_resume": shutoff.get("would_resume"),
+            "freeze_guard_status": freeze.get("status"),
+            "freeze_guard_active": freeze.get("active"),
+            "freeze_guard_source": freeze.get("source"),
+            "freeze_guard_value": freeze.get("value"),
+            "freeze_guard_threshold": freeze.get("threshold"),
+            "outdoor_24h_mean": self._pid_state.get("outdoor_mean"),
+        }
+
+
+class WhatsminerShutoffStateSensor(WhatsminerControlModeSensor):
+    """Demand shutoff state machine state."""
+
+    def __init__(self, coordinator: WhatsminerCoordinator, pid_state: dict) -> None:
+        super().__init__(coordinator, pid_state)
+        self.entity_description = SHUTOFF_STATE_SENSOR
+        self._attr_unique_id = f"{coordinator.data['mac']}_demand_shutoff_state"
+        self._attr_name = SHUTOFF_STATE_SENSOR.name
+
+    @property
+    def native_value(self):
+        state = (self._pid_state.get("demand_shutoff") or {}).get("state")
+        return state if state in SHUTOFF_STATES else "disabled"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        shutoff = self._pid_state.get("demand_shutoff") or {}
+        return {
+            "mode": shutoff.get("mode"),
+            "active": shutoff.get("active"),
+            "reason": shutoff.get("reason"),
+            "blocking": shutoff.get("blocking"),
+            "since": shutoff.get("since"),
+            "gate": shutoff.get("gate"),
+            "trigger": shutoff.get("trigger"),
+            "would_stop": shutoff.get("would_stop"),
+            "would_resume": shutoff.get("would_resume"),
+        }

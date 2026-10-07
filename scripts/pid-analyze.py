@@ -7,7 +7,12 @@ Usage:
 
 Reads a capture produced by scripts/pid-capture.py and reports run shape,
 setpoint segments, tracking quality, oscillation, saturation, integral
-trajectory, term balance, and actuation frequency.
+trajectory, term balance, actuation frequency, and (for captures from the
+PID-only / demand-shutoff integration) a shutoff summary: stops in the
+window, stops per day, off durations with the outdoor 24 h mean at each
+stop, fraction of the window spent stopped, and minutes with supply at or
+above the soft cap while the shutoff state was running/dwell. Captures that
+predate those entities report "no shutoff data" for that section.
 
 Error is computed natively in °F from (target_F − PV_F). Captures from
 older Celsius-internal versions of the integration are converted to °F
@@ -19,6 +24,7 @@ this in live displays, but old captures may still carry the bogus offset).
 from __future__ import annotations
 
 import argparse
+import bisect
 import datetime as dt
 import json
 import statistics as S
@@ -28,6 +34,18 @@ from typing import Any
 
 
 Point = tuple[dt.datetime, float]
+
+# Supply soft cap used for the shutoff "supply ≥ cap while running/dwell"
+# metric when the capture carries no config entry (matches
+# DEFAULT_PID_SUPPLY_TEMP_SAFETY_CAP in const.py).
+DEFAULT_SUPPLY_CAP_F = 122.0
+# Shutoff states during which the miner is (or should be) hashing at power_min
+# with no thermostat calling; supply climbing past the cap here is the
+# stagnant-loop condition Trigger S exists to catch.
+SHUTOFF_HASHING_STATES = ("running", "dwell")
+# Shutoff states during which the integration owns a stop (used to derive
+# off intervals when the binary sensor is missing from a capture).
+SHUTOFF_OWNED_STATES = ("stopped", "resuming")
 
 
 def c_to_f(c: float) -> float:
@@ -184,6 +202,160 @@ def settling_time_seconds(pv: list[Point], sp: float, band: float) -> float | No
     if last_bad_idx == len(pv) - 1:
         return None  # never settled
     return (pv[last_bad_idx + 1][0] - t0).total_seconds()
+
+
+class StepTimeline:
+    """Step-function view of an HA history series: value at time t is the
+    last recorded value at or before t (None before the first sample)."""
+
+    def __init__(self, points: list[tuple[dt.datetime, Any]]):
+        pts = sorted(points, key=lambda p: p[0])
+        self._times = [t for t, _ in pts]
+        self._vals = [v for _, v in pts]
+
+    def __bool__(self) -> bool:
+        return bool(self._times)
+
+    def at(self, t: dt.datetime) -> Any:
+        i = bisect.bisect_right(self._times, t)
+        return self._vals[i - 1] if i else None
+
+    def intervals_where(
+        self,
+        pred,
+        t_start: dt.datetime,
+        t_end: dt.datetime,
+    ) -> list[tuple[dt.datetime, dt.datetime, bool, bool]]:
+        """Return [(start, end, carried_in, open_at_end)] for maximal runs
+        where pred(value) is true, clamped to [t_start, t_end]."""
+        out: list[tuple[dt.datetime, dt.datetime, bool, bool]] = []
+        if not self._times:
+            return out
+        cur_start: dt.datetime | None = None
+        carried = False
+        # Seed with the value in force at t_start.
+        v0 = self.at(t_start)
+        if v0 is not None and pred(v0):
+            cur_start, carried = t_start, True
+        for t, v in zip(self._times, self._vals):
+            if t <= t_start:
+                continue
+            if t > t_end:
+                break
+            if pred(v):
+                if cur_start is None:
+                    cur_start, carried = t, False
+            elif cur_start is not None:
+                out.append((cur_start, t, carried, False))
+                cur_start = None
+        if cur_start is not None:
+            out.append((cur_start, t_end, carried, True))
+        return out
+
+
+def parse_iso(s: str | None) -> dt.datetime | None:
+    if not s:
+        return None
+    try:
+        return dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def analyze_shutoff(
+    hist: dict[str, list[dict[str, Any]]],
+    slug: str,
+    supply_f: list[Point],
+    window: dict[str, Any],
+    supply_cap_f: float,
+) -> dict[str, Any] | None:
+    """Summarise demand-shutoff behaviour over the capture window.
+
+    Returns None when the capture has neither the shutoff state sensor nor
+    the shutoff binary sensor (captures from before the PID-only refactor).
+    """
+    state_pts = string_points(hist.get(f"sensor.{slug}_demand_shutoff_state", []))
+    owned_pts = string_points(hist.get(f"binary_sensor.{slug}_demand_shutoff", []))
+    outdoor_pts = numeric_points(hist.get(f"sensor.{slug}_outdoor_24h_mean", []))
+    if not state_pts and not owned_pts:
+        return None
+
+    state_tl = StepTimeline(state_pts)
+    owned_tl = StepTimeline(owned_pts)
+    outdoor_tl = StepTimeline(outdoor_pts)
+    supply_tl = StepTimeline(supply_f)
+
+    # Window: prefer the requested capture window; fall back to the supply
+    # probe span, then to the span of whatever shutoff series we have.
+    t_start = parse_iso(window.get("start"))
+    t_end = parse_iso(window.get("end"))
+    if t_start is None or t_end is None:
+        span_src = supply_f or state_pts or owned_pts
+        t_start, t_end = span_src[0][0], span_src[-1][0]
+    if t_end <= t_start:
+        return None
+    window_s = (t_end - t_start).total_seconds()
+
+    # Off intervals: binary sensor is authoritative; derive from the enum
+    # state if the binary sensor was not captured.
+    if owned_tl:
+        intervals = owned_tl.intervals_where(lambda v: v == "on", t_start, t_end)
+        owned_source = f"binary_sensor.{slug}_demand_shutoff"
+    else:
+        intervals = state_tl.intervals_where(lambda v: v in SHUTOFF_OWNED_STATES, t_start, t_end)
+        owned_source = f"sensor.{slug}_demand_shutoff_state"
+
+    stops: list[dict[str, Any]] = []
+    for s, e, carried, open_end in intervals:
+        stops.append(
+            {
+                "start": s.isoformat(),
+                "end": e.isoformat(),
+                "off_min": (e - s).total_seconds() / 60.0,
+                "outdoor_24h_mean_f": outdoor_tl.at(s),
+                "supply_at_stop_f": supply_tl.at(s),
+                "carried_in": carried,
+                "open_at_end": open_end,
+            }
+        )
+    n_stops = sum(1 for st in stops if not st["carried_in"])
+    stopped_s = sum((e - s).total_seconds() for s, e, _, _ in intervals)
+    window_days = window_s / 86400.0
+
+    # Time spent in each shutoff state (step function sampled at a 60 s grid).
+    grid = 60.0
+    n_steps = max(1, int(window_s / grid))
+    state_min: Counter[str] = Counter()
+    hot_hashing_min = 0.0
+    for i in range(n_steps):
+        t = t_start + dt.timedelta(seconds=i * grid)
+        st = state_tl.at(t) if state_tl else None
+        if st is not None:
+            state_min[st] += 1
+        if st in SHUTOFF_HASHING_STATES:
+            sv = supply_tl.at(t)
+            if sv is not None and sv >= supply_cap_f:
+                hot_hashing_min += 1
+
+    outdoor_vals = [v for _, v in outdoor_pts]
+    return {
+        "owned_source": owned_source,
+        "has_state_sensor": bool(state_tl),
+        "has_outdoor_mean": bool(outdoor_tl),
+        "window_hours": window_s / 3600.0,
+        "stops": n_stops,
+        "stops_per_day": (n_stops / window_days) if window_days > 0 else None,
+        "off_intervals": stops,
+        "stopped_pct": 100.0 * stopped_s / window_s,
+        "state_minutes": dict(state_min),
+        "supply_cap_f": supply_cap_f,
+        "hot_while_hashing_min": hot_hashing_min if state_tl else None,
+        "outdoor_24h_mean": (
+            {"min": min(outdoor_vals), "max": max(outdoor_vals), "mean": S.mean(outdoor_vals)}
+            if outdoor_vals
+            else None
+        ),
+    }
 
 
 def analyze(path: str) -> dict[str, Any]:
@@ -437,6 +609,17 @@ def analyze(path: str) -> dict[str, Any]:
     if power_cons:
         report["power_consumption_mean_w"] = S.mean([v for _, v in power_cons])
 
+    # Demand shutoff (PID-only integration, config-entry v4+). None for
+    # captures that predate the shutoff entities.
+    supply_cap_raw = cfg_options.get(
+        "pid_supply_temp_safety_cap", cfg_data.get("pid_supply_temp_safety_cap")
+    )
+    try:
+        supply_cap_f = float(supply_cap_raw) if supply_cap_raw is not None else DEFAULT_SUPPLY_CAP_F
+    except (TypeError, ValueError):
+        supply_cap_f = DEFAULT_SUPPLY_CAP_F
+    report["shutoff"] = analyze_shutoff(hist, slug, pv, window, supply_cap_f)
+
     return report
 
 
@@ -496,9 +679,56 @@ def print_report(r: dict[str, Any]) -> None:
         pct_s = f"{pct:.1f}%" if pct is not None else "—"
         print(f"Demand entities ({pct_s} of window in active heating): {', '.join(r['demand_entities'])}")
 
+    print()
+    sh = r.get("shutoff")
+    if not sh:
+        print("Demand shutoff: no shutoff data in capture (pre-PID-only integration or entities not captured)")
+        return
+    spd = sh["stops_per_day"]
+    spd_s = f"{spd:.2f}/day" if spd is not None else "—"
+    print(
+        f"Demand shutoff: {sh['stops']} stops in {sh['window_hours']:.1f} h ({spd_s})   "
+        f"stopped {sh['stopped_pct']:.1f}% of window   [ownership from {sh['owned_source']}]"
+    )
+    if sh["hot_while_hashing_min"] is not None:
+        print(
+            f"  Supply ≥ {sh['supply_cap_f']:.0f}°F while shutoff state running/dwell: "
+            f"{sh['hot_while_hashing_min']:.0f} min"
+        )
+    else:
+        print(f"  Supply ≥ {sh['supply_cap_f']:.0f}°F while running/dwell: — (state sensor not captured)")
+    if sh["state_minutes"]:
+        parts = ", ".join(f"{k}={v} min" for k, v in sorted(sh["state_minutes"].items(), key=lambda kv: -kv[1]))
+        print(f"  State occupancy: {parts}")
+    om = sh.get("outdoor_24h_mean")
+    if om:
+        print(f"  Outdoor 24 h mean over window: min {om['min']:.1f}°F  mean {om['mean']:.1f}°F  max {om['max']:.1f}°F")
+    else:
+        print("  Outdoor 24 h mean: not captured")
+    if sh["off_intervals"]:
+        for i, st in enumerate(sh["off_intervals"], 1):
+            od = st["outdoor_24h_mean_f"]
+            od_s = f"{od:.1f}°F" if od is not None else "—"
+            sup = st["supply_at_stop_f"]
+            sup_s = f"{sup:.1f}°F" if sup is not None else "—"
+            flags = []
+            if st["carried_in"]:
+                flags.append("began before window")
+            if st["open_at_end"]:
+                flags.append("still off at window end")
+            flag_s = f"  ({'; '.join(flags)})" if flags else ""
+            print(
+                f"  Stop #{i}: {st['start'][:16]} → {st['end'][11:16]}  off {st['off_min']:.0f} min   "
+                f"outdoor mean {od_s}   supply at stop {sup_s}{flag_s}"
+            )
+    else:
+        print("  No stops in window")
+
 
 def compare(a: dict[str, Any], b: dict[str, Any]) -> None:
     def cell(x, fmtspec="+.2f"):
+        if x is None:
+            return "—"
         return fmt(x, fmtspec) if isinstance(x, (int, float)) else str(x)
 
     def seg_tail(r):
@@ -520,6 +750,8 @@ def compare(a: dict[str, Any], b: dict[str, Any]) -> None:
         ("Integral max",             cell((a.get("integral") or {}).get("max"), ".0f"), cell((b.get("integral") or {}).get("max"), ".0f")),
         ("Safety events",            a.get("safety_engaged_events", 0), b.get("safety_engaged_events", 0)),
         ("Mining-off events",        a.get("mining_off_events", 0), b.get("mining_off_events", 0)),
+        ("Shutoff stops",            (a.get("shutoff") or {}).get("stops", "—"), (b.get("shutoff") or {}).get("stops", "—")),
+        ("Stopped % of window",      cell((a.get("shutoff") or {}).get("stopped_pct"), ".1f"), cell((b.get("shutoff") or {}).get("stopped_pct"), ".1f")),
     ]
     width = max(len(str(row[0])) for row in rows)
     print("\n=== Comparison ===")

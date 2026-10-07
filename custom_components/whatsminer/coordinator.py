@@ -429,9 +429,8 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             return result
         
         # Hashrate (convert MH/s to TH/s)
-        result["hashrate"] = summary.get("MHS av", 0) / 1_000_000
-        result["hashrate_5s"] = summary.get("MHS 5s", 0) / 1_000_000
-        result["hashrate_1m"] = summary.get("MHS 1m", 0) / 1_000_000
+        result["hashrate"] = (summary.get("MHS av") or 0) / 1_000_000
+        result["hashrate_1m"] = (summary.get("MHS 1m") or 0) / 1_000_000
         
         # Expected hashrate - try multiple field names
         if "Target MHS" in summary:
@@ -467,15 +466,25 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
                 fans.append({"speed": fan_out})
         result["fans"] = fans
         
-        # Mining status - check multiple indicators
-        elapsed = summary.get("Elapsed", 0)
-        # Use the 5s hashrate: "MHS av" is a since-start average that stays
-        # non-zero for a while after hashing stops, which would hide a
-        # stopped miner from the PID and safety logic.
-        hashrate_5s = result.get("hashrate_5s", 0)
-        # Miner is mining if it has uptime AND non-zero hashrate
-        result["is_mining"] = elapsed > 0 and hashrate_5s > 0
-        
+        # Mining status. Prefer the short-window hashrates: "MHS av" is a
+        # since-start average that stays non-zero for a while after hashing
+        # stops, which would hide a stopped miner from the control loop. The
+        # M64 firmware (Whatsminer-all-2025xxxx) reports "MHS 1m"/"MHS 15m"/
+        # "HS RT" and no "MHS 5s" at all, so never depend on one key.
+        elapsed = summary.get("Elapsed", 0) or 0
+        short = 0.0
+        for key in ("MHS 5s", "MHS 1m", "HS RT"):
+            value = summary.get(key)
+            if value is not None:
+                try:
+                    short = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if short > 0:
+                    break
+        result["hashrate_5s"] = short / 1_000_000
+        result["is_mining"] = elapsed > 0 and short > 0
+
         result["uptime"] = elapsed
         # Accepted/Rejected may be in summary (old firmware) or in pools (new firmware)
         result["accepted"] = summary.get("Accepted", None)
@@ -616,6 +625,20 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         )
 
         return data
+
+    def seed_offline(self, mac: str, ip: str, base: dict) -> None:
+        """Populate data for a miner that didn't answer the first refresh.
+
+        Entities derive unique_ids from the MAC, so the cached one is used.
+        last_update_success stays False; polling starts when the first
+        listener subscribes.
+        """
+        self._mac = mac
+        data = dict(base)
+        data["mac"] = mac
+        data["ip"] = ip
+        self.data = data
+        self.last_update_success = False
 
     @property
     def available(self) -> bool:

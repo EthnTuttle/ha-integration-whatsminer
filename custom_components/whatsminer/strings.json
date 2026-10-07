@@ -34,6 +34,11 @@
     }
   },
   "options": {
+    "error": {
+      "power_bounds": "Minimum power limit must be below the maximum power limit.",
+      "invalid_pool_token": "Braiins Pool rejected this access token. Generate one under Settings → Access Profiles with \"Allow access to web APIs\".",
+      "pool_cannot_connect": "Could not reach pool.braiins.com to check the token. Try again, or leave the field empty to skip."
+    },
     "step": {
       "init": {
         "title": "Whatsminer Options: Connection & PID Core",
@@ -179,6 +184,18 @@
           "pid_integral_band": "Error band for conditional integral freeze (0 disables)",
           "pid_setpoint_ramp_rate": "Max rate at which setpoint changes (0 disables ramping)",
           "pid_slope_ewma_tau_s": "EWMA time constant for supply-temp slope used to refine step size (0 disables)"
+        }
+      },
+      "pool": {
+        "title": "Whatsminer Options: Braiins Pool",
+        "description": "Optional. A read-only Braiins Pool access token adds account hashrate, reward, balance and per-worker sensors to this miner's device. Nothing is ever written to the pool. Leave the token empty to disable.",
+        "data": {
+          "braiins_pool_token": "Braiins Pool Access Token",
+          "braiins_pool_worker": "Pool Worker Name"
+        },
+        "data_description": {
+          "braiins_pool_token": "In Braiins Pool: Settings → Access Profiles → pick or create a profile, enable \"Allow access to web APIs\", then Generate New Token. Read-only; it is stored in this config entry.",
+          "braiins_pool_worker": "Which pool worker is this miner, e.g. the part after the dot in the miner's pool username (user.worker → worker), or the full user.worker name. Leave empty on a single-worker account."
         }
       }
     }

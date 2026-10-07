@@ -70,6 +70,9 @@ CONF_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA = "pid_demand_shutoff_cold_room_delta"
 CONF_FREEZE_GUARD_SENSOR = "freeze_guard_sensor"
 CONF_FREEZE_GUARD_THRESHOLD = "freeze_guard_threshold"
 CONF_FREEZE_GUARD_FORECAST_HOURS = "freeze_guard_forecast_hours"
+# Braiins Pool read-only web API (optional account/worker sensors)
+CONF_BRAIINS_POOL_TOKEN = "braiins_pool_token"
+CONF_BRAIINS_POOL_WORKER = "braiins_pool_worker"
 
 # Option keys dropped in config-entry version 4 (PID-only refactor). Kept so
 # async_migrate_entry can strip them from stored data/options.

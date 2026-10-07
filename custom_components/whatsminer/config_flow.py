@@ -12,12 +12,19 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     EntitySelector,
     EntitySelectorConfig,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 
+from .braiins import BraiinsPoolAuthError, BraiinsPoolClient, BraiinsPoolError
 from .const import (
+    CONF_BRAIINS_POOL_TOKEN,
+    CONF_BRAIINS_POOL_WORKER,
     CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_FREEZE_GUARD_FORECAST_HOURS,
@@ -587,7 +594,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Step 6: Step bands, intervals, integral band, ramp rate, slope τ."""
         if user_input is not None:
             self._current_data.update(user_input)
-            return self.async_create_entry(title="", data=self._current_data)
+            return await self.async_step_pool()
 
         return self.async_show_form(
             step_id="tuning",
@@ -656,6 +663,57 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_PID_SLOPE_EWMA_TAU_S, DEFAULT_PID_SLOPE_EWMA_TAU_S
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=3600)),
+                }
+            ),
+        )
+
+    async def async_step_pool(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 7: Braiins Pool read-only token and worker name (optional)."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            self._update_current(
+                user_input, (CONF_BRAIINS_POOL_TOKEN, CONF_BRAIINS_POOL_WORKER)
+            )
+            # Blank fields mean "none": drop them rather than store "".
+            for key in (CONF_BRAIINS_POOL_TOKEN, CONF_BRAIINS_POOL_WORKER):
+                if not (self._current_data.get(key) or "").strip():
+                    self._current_data.pop(key, None)
+            token = self._current_data.get(CONF_BRAIINS_POOL_TOKEN)
+            if token:
+                # Prove the token works before saving it; a bad one would only
+                # surface as unavailable entities after the reload.
+                try:
+                    await BraiinsPoolClient(
+                        async_get_clientsession(self.hass), token.strip()
+                    ).profile()
+                except BraiinsPoolAuthError:
+                    errors["base"] = "invalid_pool_token"
+                except BraiinsPoolError:
+                    errors["base"] = "pool_cannot_connect"
+                else:
+                    self._current_data[CONF_BRAIINS_POOL_TOKEN] = token.strip()
+            if not errors:
+                return self.async_create_entry(title="", data=self._current_data)
+
+        return self.async_show_form(
+            step_id="pool",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_BRAIINS_POOL_TOKEN,
+                        description={
+                            "suggested_value": self._current_data.get(CONF_BRAIINS_POOL_TOKEN)
+                        },
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                    vol.Optional(
+                        CONF_BRAIINS_POOL_WORKER,
+                        description={
+                            "suggested_value": self._current_data.get(CONF_BRAIINS_POOL_WORKER)
+                        },
+                    ): str,
                 }
             ),
         )

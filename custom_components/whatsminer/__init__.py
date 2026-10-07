@@ -8,8 +8,12 @@ from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT, 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .braiins import BraiinsPoolClient, BraiinsPoolCoordinator
 from .const import (
+    CONF_BRAIINS_POOL_TOKEN,
+    CONF_BRAIINS_POOL_WORKER,
     CONF_CHIP_TEMP_SAFETY_CAP,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_MAC,
@@ -118,11 +122,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     controller = WhatsminerController(hass, entry, coordinator, pid_state, config)
     await controller.async_setup()
 
+    # Optional Braiins Pool account data. A pool or internet outage must not
+    # take the heating controller down with it, so a failed first poll is not
+    # fatal: the pool entities stay unavailable until a poll succeeds.
+    braiins: BraiinsPoolCoordinator | None = None
+    pool_token = (config.get(CONF_BRAIINS_POOL_TOKEN) or "").strip()
+    if pool_token:
+        braiins = BraiinsPoolCoordinator(
+            hass,
+            BraiinsPoolClient(async_get_clientsession(hass), pool_token),
+            (config.get(CONF_BRAIINS_POOL_WORKER) or "").strip() or None,
+            name,
+        )
+        await braiins.async_refresh()
+
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": coordinator,
         "config": config,
         "pid_state": pid_state,
         "controller": controller,
+        "braiins": braiins,
     }
 
     # Set up platforms

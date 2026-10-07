@@ -27,7 +27,6 @@
     "error": {
       "cannot_connect": "Failed to connect to the miner. Please check the IP address and ensure the miner is online.",
       "invalid_auth": "Invalid authentication. Please check the password.",
-      "power_bounds": "Minimum power limit must be below the maximum power limit.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
@@ -36,12 +35,14 @@
   },
   "options": {
     "error": {
-      "power_bounds": "Minimum power limit must be below the maximum power limit."
+      "power_bounds": "Minimum power limit must be below the maximum power limit.",
+      "invalid_pool_token": "Braiins Pool rejected this access token. Generate one under Settings → Access Profiles with \"Allow access to web APIs\".",
+      "pool_cannot_connect": "Could not reach pool.braiins.com to check the token. Try again, or leave the field empty to skip."
     },
     "step": {
       "init": {
         "title": "Whatsminer Options: Connection & PID Core",
-        "description": "Configure connection settings, power bounds, target temperature, and PID gains.",
+        "description": "Configure connection settings, power bounds, target temperature, and PID gains. The PID controller is always on; these settings define the power range it may command and how hard it pushes.",
         "data": {
           "password": "Password",
           "scan_interval": "Scan Interval (seconds)",
@@ -50,19 +51,17 @@
           "pid_target_temp": "PID Target Temperature (°F)",
           "pid_kp": "PID Kp (proportional, W/°F)",
           "pid_ki": "PID Ki (integral)",
-          "pid_kd": "PID Kd (derivative)",
-          "default_power_limit": "Default Power Limit (W, applied when PID Mode turns off)"
+          "pid_kd": "PID Kd (derivative)"
         },
         "data_description": {
           "password": "The API password for the miner",
           "scan_interval": "How often to poll the miner for updates (10-300 seconds)",
-          "power_min": "Minimum power limit for the power slider",
-          "power_max": "Maximum power limit for the power slider",
+          "power_min": "Lowest power limit the PID controller may command",
+          "power_max": "Highest power limit the PID controller may command",
           "pid_target_temp": "Target temperature for the PID controller (°F)",
           "pid_kp": "Proportional gain - controls response to current error",
           "pid_ki": "Integral gain - eliminates steady-state error",
-          "pid_kd": "Derivative gain - dampens overshoot",
-          "default_power_limit": "Power limit applied when PID Mode is disabled"
+          "pid_kd": "Derivative gain - dampens overshoot"
         }
       },
       "safety": {
@@ -75,39 +74,93 @@
         },
         "data_description": {
           "chip_temp_safety_cap": "Hard override clamps power to minimum when chip temp exceeds this threshold",
-          "pid_supply_temp_safety_cap": "Soft cap - forces power_min when supply temp exceeds this threshold",
-          "pid_supply_temp_lockout": "Hard lockout - stops mining when supply temp exceeds this threshold (requires manual reset)"
+          "pid_supply_temp_safety_cap": "Soft cap - forces power_min when supply temp exceeds this threshold. Also one of the demand-shutoff stop triggers when every thermostat is idle",
+          "pid_supply_temp_lockout": "Hard lockout - stops mining when supply temp exceeds this threshold. Latched across restarts until Reset Supply Lockout is pressed with the supply below the safety cap"
         }
       },
       "demand": {
-        "title": "Whatsminer Options: Demand & Envelope",
-        "description": "Configure demand entities that control when the PID requests power.",
+        "title": "Whatsminer Options: Demand, Shutoff & Freeze Guard",
+        "description": "Choose the thermostats that tell the controller when heat is wanted, decide whether the miner may be powered off entirely when none of them is calling, and protect the miner's outdoor coolant loop from freezing while it is stopped.",
         "data": {
-          "pid_demand_entities": "Demand Entities (climate devices)"
+          "pid_demand_entities": "Demand Entities (climate devices)",
+          "pid_demand_shutoff_mode": "Demand Shutoff Mode",
+          "pid_demand_shutoff_outdoor_min": "Shutoff: Warm Enough Outside (°F, 24 h mean)",
+          "pid_demand_shutoff_hysteresis": "Shutoff: Outdoor Hysteresis (°F)",
+          "pid_demand_shutoff_idle_dwell_min": "Shutoff: Idle Dwell (minutes)",
+          "pid_demand_shutoff_min_off_min": "Shutoff: Minimum Off Time (minutes)",
+          "pid_demand_shutoff_min_on_min": "Shutoff: Minimum On Time (minutes)",
+          "pid_demand_shutoff_supply_stop": "Shutoff: Stop on Supply Overheat",
+          "pid_demand_shutoff_supply_dwell_min": "Shutoff: Supply Overheat Dwell (minutes)",
+          "pid_demand_shutoff_unknown_grace_min": "Shutoff: Unknown-Thermostat Grace (minutes)",
+          "pid_demand_shutoff_cold_room_delta": "Shutoff: Cold Room Margin (°F)",
+          "freeze_guard_sensor": "Freeze Guard Sensor",
+          "freeze_guard_threshold": "Freeze Guard Threshold (°F)",
+          "freeze_guard_forecast_hours": "Freeze Guard Forecast Horizon (hours)"
         },
         "data_description": {
-          "pid_demand_entities": "Climate entities to monitor for heating demand. When all are idle, power is clamped to minimum."
+          "pid_demand_entities": "Climate entities to monitor for heating demand. When all are idle, power is clamped to minimum and, when demand shutoff is active, the miner is powered off. Leave empty to disable demand handling.",
+          "pid_demand_shutoff_mode": "off = never power the miner off for lack of demand. observe = run the full shutoff logic and publish what it would do (in the shutoff sensors) without sending any command to the miner; use this to check the timing before trusting it. active = actually power the miner off when every thermostat is idle and power it back on when heat is wanted again.",
+          "pid_demand_shutoff_outdoor_min": "Only consider powering off for lack of demand when the outdoor temperature, averaged over a centred 24 hour window, is at or above this. Below it, minimum power is treated as useful heat and the miner stays on. Default 58°F.",
+          "pid_demand_shutoff_hysteresis": "How far the 24 hour outdoor mean must fall below the threshold above before the warm-weather shutoff disarms again. Stops the gate from flapping when the mean hovers near the line.",
+          "pid_demand_shutoff_idle_dwell_min": "How long every thermostat must stay idle, with warm weather confirmed, before the miner is powered off. A short idle gap between heating calls will not trigger a stop.",
+          "pid_demand_shutoff_min_off_min": "Once stopped, do not power the miner back on for at least this long unless the freeze guard forces a resume. Avoids rapid off/on cycling. 0 disables.",
+          "pid_demand_shutoff_min_on_min": "Once resumed, do not power the miner off again for at least this long. The supply-overheat stop ignores this. 0 disables.",
+          "pid_demand_shutoff_supply_stop": "Also power the miner off when every thermostat is idle and the supply temperature sits at or above the soft safety cap, regardless of outdoor temperature. With no flow in the loop, minimum power alone can drift the supply up to the lockout latch.",
+          "pid_demand_shutoff_supply_dwell_min": "How long the supply must stay at or above the soft cap, with every thermostat idle, before the supply-overheat stop fires.",
+          "pid_demand_shutoff_unknown_grace_min": "If a thermostat becomes unavailable or stops reporting, keep treating it as calling for heat for this long before ignoring it. Keeps a flaky thermostat from being read as satisfied. 0 disables.",
+          "pid_demand_shutoff_cold_room_delta": "A room this far (°F) or more below its thermostat setpoint counts as calling for heat even if the thermostat reports idle. Guards against a stop while a zone is still cold.",
+          "freeze_guard_sensor": "Optional. Temperature sensor on the miner's outdoor coolant loop (or outdoor air near it). When this reads at or below the freeze threshold, every stop is blocked and a stopped miner is resumed immediately. When no sensor is set, the controller falls back to the weather entity's current temperature and its forecast minimum over the forecast horizon below.",
+          "freeze_guard_threshold": "Temperature (°F) at or below which the freeze guard engages: no stop is allowed and a stopped miner is powered back on. The 40°F default assumes plain water coolant; lower it if the loop holds glycol.",
+          "freeze_guard_forecast_hours": "How many hours ahead to scan the weather forecast for the minimum temperature when no freeze guard sensor is set. A forecast minimum at or below the threshold engages the guard before the cold arrives."
         }
       },
       "feedforward": {
         "title": "Whatsminer Options: Feedforward & Compensation",
-        "description": "Configure external temperature sensor and feedforward compensation.",
+        "description": "Configure the PID process-variable sensor, outdoor temperature feedforward, and weather forecast blending. The outdoor-reset curve below drives power if the process-variable sensor becomes unavailable.",
         "data": {
-          "external_temp_sensor": "External Temperature Sensor"
+          "external_temp_sensor": "External Temperature Sensor",
+          "pid_outdoor_temp_sensor": "Outdoor Temperature Sensor",
+          "pid_ke": "Outdoor Feedforward Ke (W/°F)",
+          "pid_weather_entity": "Weather Entity",
+          "pid_forecast_lookahead_min": "Forecast Lookahead (minutes)",
+          "pid_forecast_blend": "Forecast Blend (0-1)",
+          "pid_fallback_outdoor_cold": "Fallback: Full Power At (°F outdoor)",
+          "pid_fallback_outdoor_warm": "Fallback: Minimum Power At (°F outdoor)"
         },
         "data_description": {
-          "external_temp_sensor": "Temperature sensor used as the PID process variable (required for PID Mode)"
+          "external_temp_sensor": "Temperature sensor used as the PID process variable (required; normally the supply probe)",
+          "pid_outdoor_temp_sensor": "Optional. Outdoor temperature for feedforward; the weather entity's temperature is used when this is empty or unavailable",
+          "pid_ke": "Feedforward watts per °F of (setpoint − outdoor temperature); 0 disables",
+          "pid_weather_entity": "Optional. Supplies hourly forecasts for blending, current outdoor temperature when no outdoor sensor is set, and the freeze guard fallback when no freeze guard sensor is set",
+          "pid_forecast_lookahead_min": "How far ahead to read the hourly forecast (0 disables forecast blending)",
+          "pid_forecast_blend": "Weight of the forecast vs. current outdoor temperature (0 = current only, 1 = forecast only)",
+          "pid_fallback_outdoor_cold": "If the supply probe drops out, run at maximum power when it is this cold or colder outside",
+          "pid_fallback_outdoor_warm": "If the supply probe drops out, run at minimum power when it is this warm or warmer outside (linear in between; thermostat demand still applies)"
         }
       },
       "envelopes": {
         "title": "Whatsminer Options: Price & Surplus",
-        "description": "Configure price and surplus envelope signals (for future expansion).",
-        "data": {},
-        "data_description": {}
+        "description": "Optionally limit maximum power by energy price and solar/battery surplus.",
+        "data": {
+          "pid_price_sensor": "Price Sensor",
+          "pid_price_high": "High Price",
+          "pid_price_low": "Low Price",
+          "pid_surplus_sensor": "Surplus Sensor",
+          "pid_surplus_deficit": "Surplus Deficit Point (W)",
+          "pid_surplus_full": "Surplus Full Point (W)"
+        },
+        "data_description": {
+          "pid_price_sensor": "Energy price sensor (e.g. $/kWh)",
+          "pid_price_high": "At or above this price, power is held at the minimum",
+          "pid_price_low": "At or below this price, the full power range is allowed",
+          "pid_surplus_sensor": "Excess power sensor (W, positive = surplus)",
+          "pid_surplus_deficit": "At or below this surplus, power is held at the minimum",
+          "pid_surplus_full": "At or above this surplus, the full power range is allowed"
+        }
       },
       "tuning": {
         "title": "Whatsminer Options: Tuning & Throttling",
-        "description": "Configure step bands, adjust intervals, integral band, and ramp rate.",
+        "description": "Configure step bands, adjust intervals, integral band, ramp rate, and slope smoothing.",
         "data": {
           "pid_min_power_step": "Coarse Step (watts)",
           "pid_min_power_step_medium": "Medium Step (watts)",
@@ -117,7 +170,8 @@
           "pid_min_adjust_interval": "Minimum Adjust Interval - Decrease (seconds)",
           "pid_min_adjust_interval_increase": "Minimum Adjust Interval - Increase (seconds)",
           "pid_integral_band": "Integral Band (°F)",
-          "pid_setpoint_ramp_rate": "Setpoint Ramp Rate (°F/min)"
+          "pid_setpoint_ramp_rate": "Setpoint Ramp Rate (°F/min)",
+          "pid_slope_ewma_tau_s": "Supply Slope Smoothing (seconds)"
         },
         "data_description": {
           "pid_min_power_step": "Minimum power step when far from setpoint (coarse)",
@@ -128,7 +182,20 @@
           "pid_min_adjust_interval": "Minimum seconds between power-decrease commands",
           "pid_min_adjust_interval_increase": "Minimum seconds between power-increase commands",
           "pid_integral_band": "Error band for conditional integral freeze (0 disables)",
-          "pid_setpoint_ramp_rate": "Max rate at which setpoint changes (0 disables ramping)"
+          "pid_setpoint_ramp_rate": "Max rate at which setpoint changes (0 disables ramping)",
+          "pid_slope_ewma_tau_s": "EWMA time constant for supply-temp slope used to refine step size (0 disables)"
+        }
+      },
+      "pool": {
+        "title": "Whatsminer Options: Braiins Pool",
+        "description": "Optional. A read-only Braiins Pool access token adds account hashrate, reward, balance and per-worker sensors to this miner's device. Nothing is ever written to the pool. Leave the token empty to disable.",
+        "data": {
+          "braiins_pool_token": "Braiins Pool Access Token",
+          "braiins_pool_worker": "Pool Worker Name"
+        },
+        "data_description": {
+          "braiins_pool_token": "In Braiins Pool: Settings → Access Profiles → pick or create a profile, enable \"Allow access to web APIs\", then Generate New Token. Read-only; it is stored in this config entry.",
+          "braiins_pool_worker": "Which pool worker is this miner, e.g. the part after the dot in the miner's pool username (user.worker → worker), or the full user.worker name. Leave empty on a single-worker account."
         }
       }
     }

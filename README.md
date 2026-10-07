@@ -25,6 +25,7 @@ All temperatures are in °F.
 - **Freeze guard**: blocks or reverses stops when the miner's outdoor coolant loop is at freeze risk (details below)
 - **Probe-loss fallback**: if the supply probe drops out, the loop runs open-loop on an outdoor-reset curve (power_max at/below 10°F, power_min at/above 60°F, linear between) instead of dropping to power_min. Control Mode shows `fallback`.
 - **Auto-recovery from mining shutoffs**: on any mining on/off transition the PID clears its integrator and throttle clock and re-seeds bumpless transfer from the current wattage.
+- **Braiins Pool sensors** (optional, read-only token): account hashrate (5m/1h/24h), workers online/offline, reward today, estimated reward, balance, all-time reward, plus this miner's worker hashrate, state, last share and shares (details below)
 
 ## Installation via HACS
 
@@ -39,6 +40,10 @@ All temperatures are in °F.
 1. Copy the `custom_components/whatsminer` folder into your HA `custom_components` directory
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
+
+## Upgrading from 1.6
+
+1.7 adds optional Braiins Pool sensors (see *Braiins Pool*). Nothing changes until a token is entered in the last Configure step.
 
 ## Upgrading from 1.5
 
@@ -109,6 +114,15 @@ Initial setup asks for the connection details. Everything else is in **Configure
 ### Feedforward and tuning
 
 The feedforward step holds the optional outdoor sensor, weather entity, Ke, forecast lookahead/blend and the fallback curve endpoints. The tuning step holds the actuation throttle: three-band minimum power step (`250` / `150` / `50` W at `>9°F` / `3.6–9°F` / `≤3.6°F` error), minimum adjust interval for power-down (`600` s) and power-up (`300` s), integral freeze band (`5.4` °F), setpoint ramp rate and slope EWMA. Optional price and surplus envelopes scale the output bounds.
+
+### Braiins Pool (optional)
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| Braiins Pool Access Token | — | Read-only web-API token. In Braiins Pool: **Settings → Access Profiles**, pick or create a profile, enable **Allow access to web APIs**, **Generate New Token**. Leave empty to disable. |
+| Pool Worker Name | — | Which pool worker is this miner: the part after the dot in the miner's stratum username (`user.worker` → `worker`) or the full `user.worker`. Not needed on a single-worker account. |
+
+The token is checked against the pool when you save it. Every 5 minutes the integration reads the account profile and the worker list (two requests; the pool asks for no more than about one per 5 s) and publishes them as sensors on the miner's device: `Pool Hashrate 5m/1h/24h`, `Pool Workers Online/Offline`, `Pool Reward Today`, `Pool Estimated Reward`, `Pool Balance`, `Pool All-Time Reward`, and for this miner `Pool Worker Hashrate 5m/24h`, `Pool Worker State` (`ok`/`low`/`off`/`dis`), `Pool Worker Last Share`, `Pool Worker Shares 24h`. Hashrates are normalised to TH/s and money to BTC. Nothing is ever written to the pool, and a pool or internet outage only makes these sensors unavailable; the heating controller does not depend on them. If the worker name matches nothing, the worker sensors are unavailable and the log lists the account's workers.
 
 ## Requirements
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -22,6 +23,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .braiins import WORKER_STATES, BraiinsPoolCoordinator
 from .const import (
     CONTROL_MODES,
     DOMAIN,
@@ -271,6 +273,119 @@ SHUTOFF_STATE_SENSOR = SensorEntityDescription(
     icon="mdi:power-sleep",
 )
 
+# Braiins Pool sensors (only when a pool token is configured). Account-level
+# figures come from the profile endpoint, this miner's row from the worker
+# list. BTC amounts carry no device_class: HA's monetary class wants an ISO
+# currency code and BTC is not one.
+BITCOIN = "BTC"
+BRAIINS_PROFILE_SENSORS: dict[str, SensorEntityDescription] = {
+    "hash_rate_5m": SensorEntityDescription(
+        key="pool_hash_rate_5m",
+        name="Pool Hashrate 5m",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:server-network",
+    ),
+    "hash_rate_60m": SensorEntityDescription(
+        key="pool_hash_rate_60m",
+        name="Pool Hashrate 1h",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:server-network",
+    ),
+    "hash_rate_24h": SensorEntityDescription(
+        key="pool_hash_rate_24h",
+        name="Pool Hashrate 24h",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:server-network",
+    ),
+    "ok_workers": SensorEntityDescription(
+        key="pool_workers_ok",
+        name="Pool Workers Online",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:server",
+    ),
+    "off_workers": SensorEntityDescription(
+        key="pool_workers_off",
+        name="Pool Workers Offline",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:server-off",
+    ),
+    "today_reward": SensorEntityDescription(
+        key="pool_today_reward",
+        name="Pool Reward Today",
+        native_unit_of_measurement=BITCOIN,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=8,
+        icon="mdi:bitcoin",
+    ),
+    "estimated_reward": SensorEntityDescription(
+        key="pool_estimated_reward",
+        name="Pool Estimated Reward",
+        native_unit_of_measurement=BITCOIN,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=8,
+        icon="mdi:bitcoin",
+    ),
+    "current_balance": SensorEntityDescription(
+        key="pool_balance",
+        name="Pool Balance",
+        native_unit_of_measurement=BITCOIN,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=8,
+        icon="mdi:wallet-bifold",
+    ),
+    "all_time_reward": SensorEntityDescription(
+        key="pool_all_time_reward",
+        name="Pool All-Time Reward",
+        native_unit_of_measurement=BITCOIN,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=8,
+        icon="mdi:bitcoin",
+    ),
+}
+BRAIINS_WORKER_SENSORS: dict[str, SensorEntityDescription] = {
+    "hash_rate_5m": SensorEntityDescription(
+        key="pool_worker_hash_rate_5m",
+        name="Pool Worker Hashrate 5m",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:speedometer",
+    ),
+    "hash_rate_24h": SensorEntityDescription(
+        key="pool_worker_hash_rate_24h",
+        name="Pool Worker Hashrate 24h",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        icon="mdi:speedometer",
+    ),
+    "state": SensorEntityDescription(
+        key="pool_worker_state",
+        name="Pool Worker State",
+        device_class=SensorDeviceClass.ENUM,
+        options=WORKER_STATES,
+        icon="mdi:lan-connect",
+    ),
+    "last_share": SensorEntityDescription(
+        key="pool_worker_last_share",
+        name="Pool Worker Last Share",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:clock-check-outline",
+    ),
+    "shares_24h": SensorEntityDescription(
+        key="pool_worker_shares_24h",
+        name="Pool Worker Shares 24h",
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:counter",
+    ),
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -341,6 +456,14 @@ async def async_setup_entry(
         )
     entities.append(WhatsminerControlModeSensor(coordinator, pid_state))
     entities.append(WhatsminerShutoffStateSensor(coordinator, pid_state))
+
+    # Braiins Pool account and worker sensors, on the miner's device.
+    braiins: BraiinsPoolCoordinator | None = data.get("braiins")
+    if braiins is not None:
+        for key, description in BRAIINS_PROFILE_SENSORS.items():
+            entities.append(WhatsminerBraiinsSensor(braiins, coordinator, description, "profile", key))
+        for key, description in BRAIINS_WORKER_SENSORS.items():
+            entities.append(WhatsminerBraiinsSensor(braiins, coordinator, description, "worker", key))
 
     async_add_entities(entities)
 
@@ -644,3 +767,68 @@ class WhatsminerShutoffStateSensor(WhatsminerControlModeSensor):
             "would_stop": shutoff.get("would_stop"),
             "would_resume": shutoff.get("would_resume"),
         }
+
+
+class WhatsminerBraiinsSensor(CoordinatorEntity, SensorEntity):
+    """One value from the Braiins Pool poll, attached to the miner's device.
+
+    ``section`` is "profile" (account) or "worker" (this miner's row). Worker
+    sensors go unavailable when no worker matched, so a mis-set worker name
+    shows up as unavailable entities rather than silent zeros.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: BraiinsPoolCoordinator,
+        miner: WhatsminerCoordinator,
+        description: SensorEntityDescription,
+        section: str,
+        key: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._miner = miner
+        self._section = section
+        self._key = key
+        self._attr_unique_id = f"{miner.data['mac']}_{description.key}"
+        self._attr_name = description.name
+
+    @property
+    def device_info(self) -> entity.DeviceInfo:
+        """Return device info (the miner's, so the pool rows sit with it)."""
+        return entity.DeviceInfo(
+            identifiers={(DOMAIN, self._miner.data["mac"])},
+            name=self._miner.name,
+            manufacturer=self._miner.data.get("make", "Whatsminer"),
+            model=self._miner.data.get("model", "Unknown"),
+            sw_version=self._miner.data.get("fw_ver"),
+            configuration_url=f"http://{self._miner.data['ip']}",
+        )
+
+    def _row(self) -> dict | None:
+        data = self.coordinator.data or {}
+        return data.get(self._section)
+
+    @property
+    def available(self) -> bool:
+        row = self._row()
+        if not self.coordinator.last_update_success or row is None:
+            return False
+        return self._section != "worker" or row.get("worker") is not None
+
+    @property
+    def native_value(self):
+        row = self._row() or {}
+        value = row.get(self._key)
+        if self._key == "last_share" and value is not None:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        return value
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        row = self._row() or {}
+        if self._section == "worker":
+            return {"worker": row.get("worker"), "workers": row.get("workers")}
+        return {"username": row.get("username")}

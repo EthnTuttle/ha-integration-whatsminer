@@ -151,12 +151,22 @@ FLOOR_RAISE_STEP = 250
 FLOOR_MAX_RAISE_W = 1500
 # Re-send a floor enforcement command no sooner than this if the send failed.
 FLOOR_FIRE_RETRY_S = 60.0
-# Caps that clamp to the configured power_min even when a higher floor has
-# been learned: the chip-temp cap and the freeze-guard hold over the supply
-# lockout. There the alternative to an intermittent crash loop is up to
-# FLOOR_MAX_RAISE_W more watts into chips already over temperature or a loop
-# already past its hard limit, and the crash loop dissipates less heat.
-HARD_CAPS = frozenset({"chip", "lockout"})
+# Every safety cap (chip, supply, freeze-guard hold over the lockout) clamps
+# to the configured power_min even when a higher floor has been learned: the
+# alternative to an intermittent crash loop is up to FLOOR_MAX_RAISE_W more
+# watts into chips over temperature or a loop already past its cap, and the
+# crash loop dissipates less heat. 2026-10-07: a supply cap that clamped to the
+# learned floor, fed by restarts counted at 123°F supply, drove the miner to
+# 2500 W until the 140°F lockout tripped.
+#
+# Restarts while the supply is hot are not floor evidence (the miner may be
+# restarting on heat, not on an unholdable limit). Hot: the supply cap or the
+# freeze-guard hold over the lockout is engaged, the supply is within
+# SUPPLY_HOT_MARGIN_F of the supply cap (the S-trigger dwell's release band),
+# or it was within SUPPLY_HOT_WINDOW_S ago. The window equals FLOOR_STABLE_S,
+# so a short run that ended inside it may have begun hot.
+SUPPLY_HOT_MARGIN_F = 5.0
+SUPPLY_HOT_WINDOW_S = FLOOR_STABLE_S
 # After a user's Mining Control OFF, ignore lingering "mining" readings for this
 # long so the PID can't send a limit change to a miner that is powering down.
 USER_OFF_GRACE_S = 180.0
@@ -331,6 +341,7 @@ class WhatsminerController:
         self._idle_uptime: float | None = None
         self._run_limit: int | None = None
         self._floor_short_runs = 0
+        self._hot_short_runs = 0  # uncounted (supply-hot) short runs this episode
         self._floor_short_run_limit: int | None = None
         self._floor_learned: int | None = None
         self._floor_learned_at: float | None = None
@@ -340,6 +351,7 @@ class WhatsminerController:
         self._restart_loop_notified = False
         self._floor_chip_notified = False
         self._last_floor_fire_at: float = 0.0
+        self._supply_hot_at: float | None = None
         self._pid = PID(
             kp=self._kp,
             ki=float(g(CONF_PID_KI, DEFAULT_PID_KI)),
@@ -551,6 +563,7 @@ class WhatsminerController:
             self._floor_learn_limit = None
             self._floor_proven_ok = None
             self._floor_short_runs = 0
+            self._hot_short_runs = 0
             self._floor_short_run_limit = None
             self._floor_exhausted = False
             self._restart_loop_notified = False
@@ -620,7 +633,7 @@ class WhatsminerController:
                 # the first start of an episode however fast the miner loops.
                 seeded = self._seed_bumpless_transfer()
                 ours = self._claim_start(now)
-                if ours or self._floor_short_runs == 0:
+                if ours or (self._floor_short_runs == 0 and self._hot_short_runs == 0):
                     self._resume_hold_until = max(self._resume_hold_until, now + RESUME_BOOT_HOLD_S)
                 _LOGGER.info(
                     "Mining resumed — re-seeded PID for bumpless transfer (≈%dW)%s", seeded,
@@ -751,6 +764,7 @@ class WhatsminerController:
         caps = self._evaluate_safety_caps(temp)
         if self._freeze_hold_over_lockout:
             caps = caps | {"lockout"}
+        self._supply_hot(now, temp)
         await self._run_pid_step(temp, caps, summary, state)
 
     async def _enforce_floor_while_booting(self, temp: float | None, now: float) -> None:
@@ -987,9 +1001,7 @@ class WhatsminerController:
 
         Chip-temp guards the *miner*; the supply cap guards the *plant* (a
         stagnant loop can trip the boiler's own high-limit even at power_min).
-        The supply cap forces the effective floor (power_min, or the learned
-        floor when the miner has proven it cannot hold power_min); the chip
-        cap forces power_min regardless (see HARD_CAPS).
+        Both force power_min, never the learned floor (see SUPPLY_HOT_MARGIN_F).
         """
         caps: set[str] = set()
         chip = self._chip_temp()
@@ -1008,8 +1020,8 @@ class WhatsminerController:
                     f"{temp:.1f}" if temp is not None else "?",
                     self._supply_temp_safety_cap,
                     self._cap_clamp(active),
-                    f" (Power Min {self._power_min}W is unholdable)"
-                    if self._cap_clamp(active) > self._power_min else "",
+                    f" (below the learned floor {self._floor()}W)"
+                    if self._floor() > self._cap_clamp(active) else "",
                 )
             elif not active:
                 _LOGGER.info("Safety caps cleared")
@@ -1420,8 +1432,19 @@ class WhatsminerController:
         return min(self._power_min + FLOOR_MAX_RAISE_W, self._power_max - self._min_power_step)
 
     def _cap_clamp(self, caps: frozenset[str]) -> int:
-        """What an engaged cap forces: power_min for HARD_CAPS, else the floor."""
-        return self._power_min if caps & HARD_CAPS else self._floor()
+        """What an engaged cap forces: power_min, never the learned floor."""
+        return self._power_min
+
+    def _supply_hot(self, now: float, temp: float | None = None) -> bool:
+        """True while restarts may be thermal, not floor evidence (see SUPPLY_HOT_MARGIN_F)."""
+        # The chip cap has its own handling in _consider_floor_raise.
+        hot = "supply" in self._caps_active or self._freeze_hold_over_lockout or (
+            temp is not None and temp >= self._supply_temp_safety_cap - SUPPLY_HOT_MARGIN_F
+        )
+        if hot:
+            self._supply_hot_at = now
+            return True
+        return self._supply_hot_at is not None and now - self._supply_hot_at < SUPPLY_HOT_WINDOW_S
 
     def _mark_actuation(self) -> None:
         """We just sent a command that stops or restarts btminer."""
@@ -1462,11 +1485,11 @@ class WhatsminerController:
         Like a safety cap this bypasses the interval and boot-hold gates: a
         miner below a floor it has proven it cannot hold is about to restart
         anyway, so the restart our command causes costs nothing. Inert while
-        a HARD_CAP holds the miner at power_min, once learning is exhausted,
-        and when no floor has been learned (a limit merely below the
-        configured power_min waits for the normal gates).
+        any safety cap holds the miner at power_min, once learning is
+        exhausted, and when no floor has been learned (a limit merely below
+        the configured power_min waits for the normal gates).
         """
-        if self._floor_learned is None or self._floor_exhausted or caps & HARD_CAPS:
+        if self._floor_learned is None or self._floor_exhausted or caps:
             return False
         if believed is None or believed >= self._floor():
             return False
@@ -1529,6 +1552,7 @@ class WhatsminerController:
             # This run held its limit: the episode (if any) is over.
             changed = self._floor_short_runs or self._floor_exhausted or self._restart_loop_notified
             self._floor_short_runs = 0
+            self._hot_short_runs = 0
             self._floor_short_run_limit = None
             self._floor_exhausted = False
             self._restart_loop_notified = False
@@ -1551,6 +1575,13 @@ class WhatsminerController:
         if regression.ours or regression.run_s >= FLOOR_STABLE_S or not regression.limit:
             return
         limit = regression.limit
+        if self._supply_hot(now, self._current_temperature()):
+            self._hot_short_runs += 1
+            _LOGGER.info(
+                "Miner restarted on its own after hashing %.0fs at %dW with the supply hot — "
+                "not counted toward the learned floor", regression.run_s, limit,
+            )
+            return
         if (
             self._floor_short_run_limit is not None
             and abs(limit - self._floor_short_run_limit) > FLOOR_RAISE_STEP
@@ -1794,9 +1825,10 @@ class WhatsminerController:
 
         # Demand lockout: no thermostat calling → zone pumps idle → stagnant
         # primary loop. Force the floor and engage safety. The shutoff dwell
-        # runs on top of this clamp.
+        # runs on top of this clamp. Neither may lift output above an engaged
+        # cap's clamp (the floor can be a learned 2500 W).
         if self._demand_entities and summary == ds.ALL_IDLE:
-            new_power = floor
+            new_power = min(floor, new_power) if caps else floor
             safety_engaged = True
             if mode == "pid":
                 mode = "demand_lockout"
@@ -1813,7 +1845,7 @@ class WhatsminerController:
         if shutoff.state == ds.DWELL:
             mode = "dwell"
             safety_engaged = True
-            new_power = floor
+            new_power = min(floor, new_power) if caps else floor
         self._pid_state["control_mode"] = mode
 
         self._pid_state.update(

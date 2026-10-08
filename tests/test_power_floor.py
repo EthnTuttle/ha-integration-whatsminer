@@ -16,6 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from test_controller_smoke import MIN, Rig, Store, const, controller_mod, pn, run_async  # noqa: E402
 
 HOLD = controller_mod.RESUME_BOOT_HOLD_S
+HOT_WINDOW = controller_mod.SUPPLY_HOT_WINDOW_S
 
 
 class CrashLoopMiner:
@@ -95,6 +96,11 @@ def notification(key):
     return [m for k, _, m in pn.created if k == f"whatsminer_{key}"]
 
 
+def cooled_at(rig):
+    """When restarts started counting again: the supply hot window's end."""
+    return rig.ctl._supply_hot_at + HOT_WINDOW
+
+
 def spy_sends(rig):
     """Record every _set_power_limit call as (t, watts, floor_fire)."""
     sends: list[tuple[float, int, bool]] = []
@@ -148,31 +154,35 @@ async def polls(rig, miner, n):
 
 
 def test_crash_loop_at_power_min_steps_up_within_bounded_time(monkeypatch):
-    """Reproduces the incident; fails on the pre-fix controller (no command for 2 h)."""
+    """Reproduces the incident; fails on the pre-fix controller (no command for 2 h).
+
+    Since 1.8.1 the crashes while the supply is hot (and for SUPPLY_HOT_WINDOW_S
+    after) are not floor evidence, so learning starts once the loop has cooled.
+    """
     rig = Rig(monkeypatch)
     miner = CrashLoopMiner(rig, floor_w=1500)
 
     async def go():
         await start_at_cap(rig, miner)
         t_cap = rig.clock.t
-        first_crash_at = None
         supply = 123.0
         t_end = rig.clock.t + 120 * MIN
         while rig.clock.t < t_end:
             supply = max(77.0, supply - 0.25) if miner.limit < miner.floor_w else min(104.0, supply + 0.1)
             rig.set_supply(supply)
             miner.poll()
-            if first_crash_at is None and miner.crashes:
-                first_crash_at = rig.clock.t
             await rig.tick()
             if miner.limit >= miner.floor_w and rig.clock.t - t_cap > 25 * MIN:
                 break
         assert limits(rig), "controller never raised the limit out of the crash loop"
         assert limits(rig) == [1250, 1500], rig.calls
         assert miner.limit >= miner.floor_w
-        # Bounded recovery: first step-up within 10 min of the first crash.
-        first_up_at = miner.attempts[0][0]
-        assert first_crash_at is not None and first_up_at - first_crash_at <= 10 * MIN
+        # Bounded recovery: first step-up within 10 min of the first crash
+        # that counts (attempts[0] is the cap's own 1000 W).
+        assert miner.attempts[0][1] == 1000
+        first_up_at = miner.attempts[1][0]
+        first_counted = min(t for t in miner.crash_times if t >= cooled_at(rig))
+        assert 0 <= first_up_at - first_counted <= 10 * MIN, (first_counted, miner.attempts)
         floor = rig.pid_state["power_floor"]
         assert floor["effective"] == 1500 and floor["learned"] == 1500 and floor["unholdable_limit"] == 1250
         assert Store.saved["whatsminer.e1.controller"]["floor_learned"] == 1500
@@ -195,12 +205,15 @@ def test_stair_up_cost_to_2000w(monkeypatch):
 
     async def go():
         await start_at_cap(rig, miner)
-        t0 = rig.clock.t
-        await crash_loop(rig, miner, 60, supply=123.0, until=lambda: miner.limit >= miner.floor_w)
+        await crash_loop(rig, miner, 90, supply=123.0, until=lambda: miner.limit >= miner.floor_w)
+        # Crashes confirmed before this were with the supply hot: not counted.
+        # A crash is confirmed down_polls polls after it happens.
+        t0 = cooled_at(rig)
+        crashes = len([t for t in miner.crash_times if t >= t0 - miner.down_polls * 30])
         minutes = (rig.clock.t - t0) / MIN
-        print(f"\nstair-up to 2000 W: commands={limits(rig)} crashes={miner.crashes} minutes={minutes:.1f}")
+        print(f"\nstair-up to 2000 W: commands={limits(rig)} crashes={crashes} minutes={minutes:.1f}")
         assert limits(rig) == [1250, 1500, 1750, 2000]
-        assert miner.crashes == 5
+        assert crashes == 5
         assert minutes < 30
 
     run_async(go())
@@ -274,7 +287,7 @@ def test_pid_lifts_off_the_floor_rail_with_slowly_rising_supply(monkeypatch):
 # ------------------------------------------------------------- persistence
 
 
-def test_learned_floor_persists_and_clamps_cap_lockout_dwell(monkeypatch):
+def test_learned_floor_persists_and_clamps_lockout_dwell_but_not_the_cap(monkeypatch):
     rig = Rig(monkeypatch)
     Store.saved["whatsminer.e1.controller"] = {"floor_learned": 1500, "floor_learn_limit": 1250}
 
@@ -283,7 +296,7 @@ def test_learned_floor_persists_and_clamps_cap_lockout_dwell(monkeypatch):
         assert rig.pid_state["power_floor"]["effective"] == 1500
         rig.set_supply(123.0)
         await rig.tick()
-        assert limits(rig) == [1500], rig.calls
+        assert limits(rig) == [1000], rig.calls  # the supply cap wins over the learned floor
         assert rig.pid_state["out_min_effective"] == 1500
         rig.coord.api.calls.clear()
         rig.mining(True, limit=1500)
@@ -293,7 +306,7 @@ def test_learned_floor_persists_and_clamps_cap_lockout_dwell(monkeypatch):
         await rig.tick()
         assert rig.pid_state["control_mode"] in ("demand_lockout", "dwell")
         assert rig.pid_state["output"] == 1500
-        assert 1000 not in limits(rig)
+        assert limits(rig) == [1500], rig.calls  # the floor is restored once the cap clears
         # Probe lost: the fallback curve's low end is the floor too.
         rig.set_supply(None)
         rig.set_weather(70.0, [70.0] * 24)
@@ -572,12 +585,16 @@ def test_short_runs_at_another_limit_do_not_seed_learning_at_the_clamp(monkeypat
         await polls(rig, miner, 1)
         assert limits(rig) == [1000]  # the cap clamps (our restart)
         rig.set_supply(104.0)
-        await crash_loop(rig, miner, 20, until=lambda: miner.crashes == 3)
-        await polls(rig, miner, 3)  # regression, confirmation, hashing tick
+        # Crashes in the supply-hot window after the cap are not counted.
+        await crash_loop(rig, miner, 30, until=lambda: rig.clock.t >= cooled_at(rig))
+        assert rig.ctl._floor_short_run_limit == 3000
+        # The first counted crash at the clamp starts a fresh count.
+        await crash_loop(rig, miner, 20, until=lambda: rig.ctl._floor_short_run_limit == 1000)
         floor = rig.pid_state["power_floor"]
         assert floor["short_runs"] == 1 and floor["learned"] is None, floor
         assert limits(rig) == [1000]
-        await crash_loop(rig, miner, 20, until=lambda: miner.crashes == 4)
+        n = miner.crashes
+        await crash_loop(rig, miner, 20, until=lambda: miner.crashes == n + 1)
         await polls(rig, miner, 3)
         assert rig.pid_state["power_floor"]["learned"] == 1250
         assert limits(rig) == [1000, 1250], rig.calls
@@ -702,7 +719,7 @@ def test_floor_ceiling_stops_raising_and_notifies(monkeypatch):
 
     async def go():
         await start_at_cap(rig, miner)
-        await crash_loop(rig, miner, 60, supply=123.0)
+        await crash_loop(rig, miner, 90, supply=123.0)
         # ceiling = min(power_min + 1500, power_max - coarse step) = 2500
         assert limits(rig)[:6] == [1250, 1500, 1750, 2000, 2250, 2500], rig.calls
         floor = rig.pid_state["power_floor"]
@@ -789,7 +806,11 @@ def test_floor_command_send_failure_persists_floor_and_retries(monkeypatch):
         await start_at_cap(rig, miner)
         sends = spy_sends(rig)
         rig.coord.api.fail.add("set_power_limit")
-        await crash_loop(rig, miner, 12, supply=123.0)
+        # Above target (the PID wants the floor) but out of the cap's hot band.
+        await crash_loop(
+            rig, miner, 60, supply=110.0, decay=0.0, until=lambda: rig.pid_state["power_floor"]["learned"]
+        )
+        await crash_loop(rig, miner, 12, supply=110.0, decay=0.0)
         assert rig.pid_state["power_floor"]["learned"] == 1250
         assert Store.saved["whatsminer.e1.controller"]["floor_learned"] == 1250
         assert created("floor_raised") == 1  # no double raise while the send fails
@@ -814,5 +835,129 @@ def test_stale_power_limit_after_floor_command_does_not_double_command(monkeypat
         await crash_loop(rig, miner, 40, supply=123.0)
         assert limits(rig) == [1250, 1500], rig.calls
         assert miner.limit == 1500
+
+    run_async(go())
+
+
+# ------------------------------------------------- the 2026-10-07 overheat
+# Supply sat at ~123°F over the 122°F cap with no zone calling. The cap forced
+# power_min = 1500 W; the miner kept restarting on its own; each pair of
+# restarts raised the learned floor, the cap clamp and the no-demand dwell
+# followed the floor up to 2500 W, and supply climbed to the 140°F lockout.
+
+OVERNIGHT = {
+    const.CONF_POWER_MIN: 1500,
+    const.CONF_POWER_MAX: 5000,
+    const.CONF_PID_DEMAND_SHUTOFF_MODE: "observe",
+}
+
+
+def no_critical(caplog):
+    return [r.getMessage() for r in caplog.records if r.levelname == "CRITICAL"]
+
+
+def test_restarts_with_supply_over_the_cap_do_not_ratchet_the_floor(monkeypatch, caplog):
+    rig = Rig(monkeypatch, **OVERNIGHT)
+    miner = CrashLoopMiner(rig, floor_w=9999)  # restarts at any limit, as on heat
+
+    async def go():
+        await rig.setup()
+        rig.set_supply(104.0)
+        await rig.tick()
+        assert rig.calls == []
+        rig.set_supply(123.0)
+        miner.poll()
+        await rig.tick()
+        assert limits(rig) == [1500], rig.calls
+        await crash_loop(rig, miner, 60, supply=123.0, decay=0.0)
+        assert miner.crashes >= 10
+        floor = rig.pid_state["power_floor"]
+        assert floor["learned"] is None and floor["effective"] == 1500, floor
+        assert floor["short_runs"] == 0 and floor["exhausted"] is False, floor
+        assert limits(rig) == [1500], rig.calls  # output stays at the cap power
+        assert rig.pid_state["control_mode"] == "safety_cap"
+        assert rig.pid_state["output"] == 1500
+        assert created("floor_raised") == 0 and created("floor_ceiling") == 0
+        assert created("restart_loop") == 0
+        assert no_critical(caplog) == []
+
+    run_async(go())
+
+
+def test_supply_cap_holds_power_min_under_a_learned_floor(monkeypatch):
+    """A floor learned earlier (overnight it reached 2500 W) does not lift the cap clamp."""
+    rig = Rig(monkeypatch, **OVERNIGHT)
+    Store.saved["whatsminer.e1.controller"] = {"floor_learned": 2500, "floor_learn_limit": 2250}
+    rig.mining(True, limit=2500)
+    rig.coord.data["uptime"] = 86400
+
+    async def go():
+        await rig.setup()
+        assert rig.pid_state["power_floor"]["effective"] == 2500
+        rig.set_supply(123.0)
+        await rig.tick()
+        assert limits(rig) == [1500], rig.calls
+        rig.mining(True, limit=1500)
+        rig.coord.data["uptime"] = 30
+        await rig.run(5)
+        assert limits(rig) == [1500], rig.calls  # floor enforcement is inert under the cap
+        assert rig.pid_state["output"] == 1500
+
+    run_async(go())
+
+
+def test_no_demand_dwell_with_supply_hot_does_not_force_the_learned_floor(monkeypatch):
+    rig = Rig(monkeypatch, **OVERNIGHT)
+    Store.saved["whatsminer.e1.controller"] = {"floor_learned": 2500, "floor_learn_limit": 2250}
+    rig.mining(True, limit=2500)
+    rig.coord.data["uptime"] = 86400
+
+    async def go():
+        await rig.setup()
+        rig.arm_gate(60.0)
+        rig.set_thermostats("idle")
+        rig.set_supply(123.0)
+        await rig.tick()
+        assert rig.pid_state["control_mode"] == "dwell"
+        assert rig.pid_state["output"] == 1500
+        assert limits(rig) == [1500], rig.calls
+        rig.mining(True, limit=1500)
+        rig.coord.data["uptime"] = 30
+        for supply in (123.5, 124.0, 123.0, 121.0, 119.0):  # over the cap, then back under it
+            rig.set_supply(supply)
+            await rig.run(4)
+            assert rig.pid_state["control_mode"] in ("dwell", "demand_lockout", "safety_cap")
+            if supply >= 122.0:
+                assert rig.pid_state["output"] == 1500, supply
+        # Once the cap clears, the no-demand clamp is the floor again (the
+        # lowest limit the miner is known to hold), never more.
+        assert limits(rig) == [1500, 2500], rig.calls
+        assert rig.pid_state["output"] == 2500
+
+    run_async(go())
+
+
+def test_restarts_in_the_hot_band_and_window_do_not_count_then_learning_resumes(monkeypatch, caplog):
+    rig = Rig(monkeypatch, **OVERNIGHT)
+    miner = CrashLoopMiner(rig, floor_w=1750, limit=1500)
+
+    async def go():
+        await rig.setup()
+        rig.set_supply(119.0)  # under the 122°F cap, inside its 5°F hot band
+        await rig.tick()
+        miner.restart()  # ends the long run
+        await crash_loop(rig, miner, 30, supply=119.0, decay=0.0)
+        assert miner.crashes >= 5
+        assert rig.pid_state["power_floor"]["short_runs"] == 0
+        assert rig.pid_state["power_floor"]["learned"] is None
+        rig.set_supply(110.0)  # out of the band; the window still runs
+        t_cool = rig.clock.t
+        await crash_loop(rig, miner, 14, supply=110.0, decay=0.0)
+        assert rig.pid_state["power_floor"]["learned"] is None
+        await crash_loop(rig, miner, 30, supply=110.0, decay=0.0, until=lambda: miner.limit >= miner.floor_w)
+        floor = rig.pid_state["power_floor"]
+        assert floor["learned"] == 1750 and floor["unholdable_limit"] == 1500, floor
+        assert miner.attempts[-1][0] - t_cool >= HOT_WINDOW
+        assert no_critical(caplog) == []
 
     run_async(go())

@@ -41,6 +41,15 @@ All temperatures are in °F.
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
 
+## 1.8.1: the safety caps win over the learned floor
+
+On 2026-10-07 the supply sat at about 123°F, over the 122°F cap, with no zone calling. The cap forced `Power Min`, but the miner kept restarting on its own; each pair of restarts raised the learned floor, and the supply cap, the no-demand clamp and the dwell all followed the floor up to 2500 W until the 140°F lockout tripped. From 1.8.1:
+
+- Every safety cap (supply, chip, freeze-guard hold) forces `Power Min`, never the learned floor, and floor enforcement is inert while a cap is engaged. The demand lockout and the dwell can no longer lift output above a cap's clamp.
+- Restarts while the supply is hot are not counted toward the learned floor. Hot means a supply cap is engaged, the supply is within 5°F of the cap, or it was either within the last 15 min. They do not mark a limit unholdable and do not raise the "miner needs service" notification.
+
+A learned floor survives the upgrade. If yours was raised during a hot spell, press **Reset Learned Floor**.
+
 ## Upgrading from 1.7
 
 1.8 stops and starts mining over the miner's API v3 (port 4433, `set.miner.service stop`/`start`) on firmware from November 2024 on. On that firmware the old v2 `power_off` does not hold: btminer restarts and resumes hashing within minutes, so the supply lockout and the demand shutoff could not keep the miner off. The first stop opens the v3 write API once over port 4028 with the admin password. Set **API v3 Super Password** in Configure if the miner's `super` account is not on the default `super`. Older firmware, or any v3 failure, falls back to v2 `power_off`/`power_on`; the **Mining Status** sensor's `control_api` attribute shows which path is in use.
@@ -144,8 +153,8 @@ Each poll, the integration decides the power limit in this order; the first that
 
 1. **Supply lockout latched** (`latched`): mining is stopped and nothing is sent until the latch is reset.
 2. **Demand shutoff owns a stop** (`stopped` / `resuming`): no power-limit commands; the miner is off or booting.
-3. **Safety caps** (`safety_cap`): chip temp ≥ 185°F or supply ≥ 122°F forces `Power Min` on the next tick, bypassing the time throttle.
-4. **Demand lockout** (`demand_lockout` / `dwell`): every configured thermostat idle clamps to `Power Min`. With no zone calling, the zone pumps are off and the primary loop is stagnant, so there is no flow to dissipate power into. `dwell` means a shutoff dwell is also counting down.
+3. **Safety caps** (`safety_cap`): chip temp ≥ 185°F or supply ≥ 122°F forces `Power Min` on the next tick, bypassing the time throttle. A learned floor never raises it.
+4. **Demand lockout** (`demand_lockout` / `dwell`): every configured thermostat idle clamps to the effective floor (`Power Min`, or the learned floor), but never above an engaged cap's `Power Min`. With no zone calling, the zone pumps are off and the primary loop is stagnant, so there is no flow to dissipate power into. `dwell` means a shutoff dwell is also counting down.
 5. **Probe lost** (`fallback`): open-loop outdoor-reset curve.
 6. **Closed loop** (`pid`).
 
@@ -164,7 +173,7 @@ The chip-temp cap guards the miner; the supply caps guard the plant. The supply 
 
 The firmware treats `adjust_power_limit` as a ceiling and accepts any value. Below the hashboards' real minimum it cannot find a frequency solution and simply restarts btminer, forever (an M64 at 1000 W cycles every 2.5–4 min and never hashes). Before 1.6 every such restart re-armed the 10 min boot hold, so the controller could never raise the limit again: a supply-cap clamp to an unholdable `Power Min` left the house cold until someone intervened.
 
-The controller now watches for restarts it did not command (an `Elapsed` regression confirmed by the next poll). Two in a row from runs shorter than 15 min at about the same limit prove that limit unholdable: the effective floor becomes limit + 250 W, is persisted, is sent through the boot hold, and every further crash in the same episode raises it another step. A run that hashes 15 min ends the episode. The floor replaces `Power Min` for the supply cap, demand lockout, dwell, fallback curve and the PID's lower bound; the chip-temp cap and the freeze-guard hold over the supply lockout still clamp to `Power Min` (less power into over-temperature chips or an over-limit loop beats more). Learning stops at `Power Min` + 1500 W; restarts above that are reported as a restart loop and left alone.
+The controller now watches for restarts it did not command (an `Elapsed` regression confirmed by the next poll). Two in a row from runs shorter than 15 min at about the same limit prove that limit unholdable: the effective floor becomes limit + 250 W, is persisted, is sent through the boot hold, and every further crash in the same episode raises it another step. A run that hashes 15 min ends the episode. The floor replaces `Power Min` for the demand lockout, dwell, fallback curve and the PID's lower bound. Every safety cap (supply, chip-temp, and the freeze-guard hold over the supply lockout) still clamps to `Power Min`, and floor enforcement waits until the cap clears: less power into an over-temperature loop or chips beats more, and a crash loop dissipates less heat. Restarts while the supply is hot (a supply cap engaged, supply within 5°F of the cap, or either within the last 15 min) are not floor evidence, because the miner may be restarting on heat. Learning stops at `Power Min` + 1500 W; restarts above that are reported as a restart loop and left alone.
 
 Each raise costs one commanded restart, and a 1000 → 2000 W climb costs about five crashes and 25 min, so set `Power Min` to a limit the miner is known to hold rather than relying on learning. The learned floor is shown in the Control Mode sensor's `power_floor_*` attributes and the `floor_raised` notification. **Reset Learned Floor** clears it after the hashboards have been serviced (on the M64 a crash loop at low limits goes with error codes 560–563, slot loss of balance: reseat the adapter/ribbon, re-torque the busbar). Raising `Power Min` above the learned floor also drops it.
 

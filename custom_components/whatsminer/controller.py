@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timedelta
 from time import time
@@ -134,6 +135,43 @@ LOCKOUT_REASSERT_INTERVAL = 180.0
 RESUME_BOOT_HOLD_S = 600.0
 # Retry a power_on whose send failed (timeout, token error) after this long.
 POWER_ON_RETRY_S = 60.0
+# Predictive limiting. Every limit change restarts btminer and the supply
+# answers it late, so the actuation gate looks PREDICT_HORIZON_S ahead along
+# the supply's least-squares slope over SLOPE_WINDOW_S (needs SLOPE_MIN_SPAN_S
+# of samples). The horizon is the pessimistic miner-to-probe lag: a loop with
+# zones calling answers a cut in 2-4 min, but zones satisfying mid-climb
+# leave it stagnant while the heat already sent keeps arriving for ~10-15
+# min (2026-10-08: resumes from ~88°F at 3.5-4.2 kW peaked at 124-130°F).
+# Only a slope of at least PREDICT_MIN_SLOPE_F_MIN counts as rising, so probe
+# quantisation (0.1125°F) near setpoint never projects anything.
+#   rising, projection ≥ target: no increase; the PID re-run on the projected
+#     error may pull back through the normal gates, on the shorter (increase)
+#     interval since it replaces a larger cut later.
+#   settled (error and projection both within half the fine band): no
+#     fine-sized change at all, integral held; fine nudges there were
+#     restarts spent on probe dither.
+#   rising, projection ≥ supply cap, or ≥ target with every zone idle (or
+#     the shutoff dwelling): command the floor now, bypassing the interval
+#     and boot hold like a cap (the cap and the idle clamp fire too late for
+#     the heat already in the pipe), and re-arm the soft start.
+PREDICT_HORIZON_S = 720.0
+SLOPE_WINDOW_S = 300.0
+SLOPE_MIN_SPAN_S = 120.0
+PREDICT_MIN_SLOPE_F_MIN = 0.2
+# A change larger than this between two samples (the Scout reports once a
+# minute; the fastest real climb is ~3.3°F/min) is a probe glitch or
+# reconnect: restart the slope window instead of projecting it.
+SUPPLY_JUMP_F = 5.0
+# Soft start. After a start we did not cause with a limit change (demand-
+# shutoff resume, Mining Control on, lockout reset, firmware restart), an HA
+# restart onto a cold loop, or a predictive back-off, the soft start owns
+# increases: hold the limit through the boot hold, then step up only while the
+# projection is short of target, at most once per PREDICT_HORIZON_S (or the
+# increase interval if longer), by Kp × that shortfall capped at
+# SOFT_START_STEP_FRAC of the floor..power_max span. The integral is frozen meanwhile and re-seeded
+# from the limit in force once the supply is within the fine band of target.
+# Never forces a decrease and never blocks floor enforcement.
+SOFT_START_STEP_FRAC = 0.5
 # Learned power floor. The firmware accepts any limit and treats it as a
 # ceiling; below the hashboards' real minimum it cannot find a frequency
 # solution and simply restarts btminer, forever (M64: ~3 min cycles at 1000 W).
@@ -321,6 +359,9 @@ class WhatsminerController:
         self._last_commanded_power: int | None = None
         self._last_is_mining: bool | None = None
         self._last_command_time: float = 0.0
+        # Supply samples for the predictive slope, and the soft start.
+        self._supply_samples: deque[tuple[float, float]] = deque()
+        self._soft_start = False
         self._step_lock = asyncio.Lock()
         self._caps_active: frozenset[str] = frozenset()
         self._last_lockout_power_off: float = 0.0
@@ -510,6 +551,7 @@ class WhatsminerController:
                         "suppressed until a thermostat calls for heat"
                     )
                 self._resume_hold_until = now + RESUME_BOOT_HOLD_S
+                self._arm_soft_start("Mining Control on")
             else:
                 self._shutoff = ds.user_mining_off(self._shutoff, now)
                 self._user_off_at = now
@@ -603,6 +645,9 @@ class WhatsminerController:
                 self._resume_hold_until = max(
                     self._resume_hold_until, time() + RESUME_BOOT_HOLD_S - uptime
                 )
+            temp = self._current_temperature()
+            if temp is not None and temp < self._target() - self._fine_step_band:
+                self._arm_soft_start("controller started onto a cold loop")
             _LOGGER.info("Controller started — seeded PID from current limit (≈%dW)", seeded)
         elif self._last_is_mining is not None and is_mining != self._last_is_mining:
             if not is_mining:
@@ -616,6 +661,7 @@ class WhatsminerController:
                 if self._recently_sent_limit() is None:
                     self._last_commanded_power = None
                     self._last_command_time = 0.0
+                    self._soft_start = False  # the start edge re-arms it
                     _LOGGER.info("Mining stopped — PID controller state reset")
                 else:
                     # The restart every adjust_power_limit causes. Zeroing the
@@ -635,6 +681,10 @@ class WhatsminerController:
                 ours = self._claim_start(now)
                 if ours or (self._floor_short_runs == 0 and self._hot_short_runs == 0):
                     self._resume_hold_until = max(self._resume_hold_until, now + RESUME_BOOT_HOLD_S)
+                if self._recently_sent_limit() is None:
+                    # Not the restart our own limit change causes (that one
+                    # keeps whatever soft start was running).
+                    self._arm_soft_start("mining resumed")
                 _LOGGER.info(
                     "Mining resumed — re-seeded PID for bumpless transfer (≈%dW)%s", seeded,
                     "" if ours else " (restart not commanded by the controller)",
@@ -659,6 +709,7 @@ class WhatsminerController:
         now = time()
         temp = self._current_temperature()
         fresh = bool(self.coordinator.last_update_success)
+        self._note_supply(now, temp)
         # coordinator.data keeps the last successful poll, so when not fresh
         # this is the last known value; decide() treats it accordingly.
         is_mining = bool(self.coordinator.data.get("is_mining"))
@@ -1303,7 +1354,7 @@ class WhatsminerController:
             {
                 "error": None, "proportional": None, "integral": None,
                 "derivative": None, "external": None, "output": None,
-                "requested_output": None,
+                "requested_output": None, "supply_projected": None, "predictive": None,
             }
         )
 
@@ -1702,6 +1753,49 @@ class WhatsminerController:
             "run_uptime_s": self._last_uptime,
         }
 
+    # ------------------------------------------------------------ prediction
+
+    def _note_supply(self, now: float, temp: float | None) -> None:
+        samples = self._supply_samples
+        if temp is not None:
+            if samples and abs(float(temp) - samples[-1][1]) > SUPPLY_JUMP_F:
+                samples.clear()  # probe glitch or reconnect, not a trend
+            samples.append((now, float(temp)))
+        while samples and now - samples[0][0] > SLOPE_WINDOW_S:
+            samples.popleft()
+
+    def _supply_slope(self) -> float | None:
+        """Least-squares supply slope (°F/min) over SLOPE_WINDOW_S, or None if too few samples."""
+        samples = self._supply_samples
+        if len(samples) < 3 or samples[-1][0] - samples[0][0] < SLOPE_MIN_SPAN_S:
+            return None
+        n = len(samples)
+        mean_t = sum(t for t, _ in samples) / n
+        mean_v = sum(v for _, v in samples) / n
+        var = sum((t - mean_t) ** 2 for t, _ in samples)
+        if var <= 0:
+            return None
+        return 60.0 * sum((t - mean_t) * (v - mean_v) for t, v in samples) / var
+
+    def _arm_soft_start(self, why: str) -> None:
+        if not self._soft_start:
+            _LOGGER.info("Soft start armed (%s) — increases stepped until the supply nears target", why)
+        self._soft_start = True
+
+    def _soft_start_power(
+        self, base: int, error: float, slope: float | None, projected: float, target: float,
+        boot_hold: bool, now: float,
+    ) -> int:
+        """The limit the soft start allows this tick: hold base, or one step up."""
+        # Spaced from our last limit change; after a resume the boot hold is
+        # the wait. No step without a slope: we must see the supply isn't rising.
+        spacing = max(PREDICT_HORIZON_S, float(self._min_adjust_interval_increase))
+        if boot_hold or slope is None or projected >= target or now - self._sent_limit_at < spacing:
+            return base
+        span = max(0.0, self._pid.out_max - self._pid.out_min)
+        step = min(SOFT_START_STEP_FRAC * span, max(self._kp * (target - projected), float(self._min_power_step)))
+        return int(round(min(float(base) + step, self._pid.out_max)))
+
     async def _run_pid_step(
         self, temp: float | None, caps: frozenset[str], summary: str, shutoff: ds.ShutoffState
     ) -> None:
@@ -1816,6 +1910,48 @@ class WhatsminerController:
         requested_power = int(round(output))
         new_power = requested_power
         current_limit = self.coordinator.data.get("wattage_limit") or 0
+        reference = self._reference(current_limit)
+        base = reference if reference is not None else floor
+        boot_hold = now < self._resume_hold_until
+
+        # Prediction and soft start (see PREDICT_HORIZON_S, SOFT_START_STEP_FRAC).
+        slope = self._supply_slope()
+        rising = slope is not None and slope >= PREDICT_MIN_SLOPE_F_MIN
+        projected = float(temp) + (max(slope, 0.0) * PREDICT_HORIZON_S / 60.0 if slope is not None else 0.0)
+        if self._soft_start and error <= self._fine_step_band:
+            self._soft_start = False
+            # Bumpless hand-back: the PID resumes from the limit in force.
+            self._pid.integral = float(base) - self._pid.proportional - self._pid.derivative - self._pid.external
+            integral_snapshot = self._pid.integral
+            output, requested_power, new_power = float(base), base, base
+            _LOGGER.info("Soft start done at %.1f°F — PID resumes from %dW", temp, base)
+        predictive = None
+        stagnant = (bool(self._demand_entities) and summary == ds.ALL_IDLE) or shutoff.state == ds.DWELL
+        if not caps:
+            if rising and (projected >= self._supply_temp_safety_cap or (stagnant and projected >= target)):
+                # Headed for the cap, or still climbing with no zone flow to
+                # carry the heat away: the clamp below would wait out the
+                # decrease interval with the heat already in the pipe.
+                new_power, predictive = floor, "back_off"
+            else:
+                if self._soft_start:
+                    new_power = self._soft_start_power(base, error, slope, projected, target, boot_hold, now)
+                if rising and projected >= target:
+                    # Cut Kp × the overshoot the horizon predicts from the
+                    # limit in force; never raise.
+                    pred = int(round(base - self._kp * (projected - target)))
+                    hold = min(base, max(pred, floor))
+                    if hold < new_power:
+                        new_power, predictive = hold, ("hold" if hold >= base else "pull_back")
+                settle = self._fine_step_band / 2
+                if (
+                    predictive is None and not self._soft_start and not stagnant and reference is not None
+                    and abs(error) <= settle and abs(target - projected) <= settle
+                    and abs(new_power - base) < self._min_power_step_medium
+                ):
+                    # Settled: a fine nudge now is a restart for ±1°F of
+                    # probe dither. Hold, and hold the integral both ways.
+                    new_power, predictive = base, "settled"
 
         safety_engaged = bool(caps)
         mode = "pid"
@@ -1848,6 +1984,25 @@ class WhatsminerController:
             new_power = min(floor, new_power) if caps else floor
         self._pid_state["control_mode"] = mode
 
+        # Anti-windup. Under the soft start the PID tracks the limit in force
+        # (its integral, frozen near the floor since the resume, would
+        # otherwise ask for less than the miner already runs at), so the
+        # hand-back is bumpless. Otherwise no upward integration while
+        # anything holds the output below what the PID asks (cap, lockout,
+        # dwell, prediction) or the boot hold keeps the limit from following
+        # it; the integral may still fall.
+        if self._soft_start:
+            self._pid.integral = float(base) - self._pid.proportional - self._pid.derivative - self._pid.external
+            self._pid._output = max(min(float(base), self._pid.out_max), float(floor) + sat_tol + 0.01)
+        elif predictive == "settled" or (
+            (new_power < requested_power or boot_hold) and self._pid.integral > integral_snapshot
+        ):
+            self._pid.integral = integral_snapshot
+            output = self._pid.proportional + integral_snapshot + self._pid.derivative + self._pid.external
+            output = max(min(output, self._pid.out_max), float(floor))
+            self._pid._output = max(output, float(floor) + sat_tol + 0.01) if error > 0 else output
+            requested_power = int(round(output))
+
         self._pid_state.update(
             {
                 "error": self._pid.error,
@@ -1859,6 +2014,10 @@ class WhatsminerController:
                 "requested_output": requested_power,
                 "safety_engaged": safety_engaged,
                 "pv_slope": self._slope_ewma,
+                "supply_slope": None if slope is None else round(slope, 3),
+                "supply_projected": round(projected, 2),
+                "predictive": predictive,
+                "soft_start": self._soft_start,
             }
         )
 
@@ -1866,7 +2025,6 @@ class WhatsminerController:
         # adjust_power_limit restarts mining. Safety caps and floor enforcement
         # (believed limit below a floor the miner cannot hold) bypass the time
         # gates and the boot hold.
-        reference = self._reference(current_limit)
         floor_fire = self._floor_fire(reference, now, caps)
         if floor_fire:
             # Enforce exactly the floor through the hold; the PID's own request
@@ -1893,11 +2051,14 @@ class WhatsminerController:
                     effective_min_step, band_label = self._min_power_step_fine, "medium→fine"
         step_ok = delta >= effective_min_step
         effective_interval = self._min_adjust_interval_increase if new_power > reference else self._min_adjust_interval
+        if predictive == "pull_back":
+            # Replaces the larger cut the decrease interval would make later.
+            effective_interval = min(effective_interval, self._min_adjust_interval_increase)
         interval_ok = elapsed >= effective_interval
         safety_fire = bool(caps) and step_ok
-        boot_hold = now < self._resume_hold_until
+        backoff_fire = predictive == "back_off" and step_ok and new_power < reference
 
-        if not safety_fire and not floor_fire and (not (step_ok and interval_ok) or boot_hold):
+        if not safety_fire and not floor_fire and not backoff_fire and (not (step_ok and interval_ok) or boot_hold):
             _LOGGER.debug(
                 "PID actuation throttled: Δ=%dW (need %dW, %s band), elapsed=%.0fs (need %ds)%s",
                 delta, effective_min_step, band_label, elapsed, effective_interval,
@@ -1906,6 +2067,13 @@ class WhatsminerController:
             self._pid_state["output"] = self._last_commanded_power
             return
 
+        if backoff_fire:
+            _LOGGER.warning(
+                "Supply %.1f°F rising %.2f°F/min projects %.1f°F ≥ cap %.1f°F within %d min — "
+                "backing off to %dW now", temp, slope, projected, self._supply_temp_safety_cap,
+                PREDICT_HORIZON_S // 60, new_power,
+            )
+            self._arm_soft_start("predictive back-off")
         _LOGGER.info(
             "PID: temp=%.1f°F target=%.1f°F → power %dW (was %dW, err=%.2f)",
             temp, target, new_power, reference, self._pid.error,

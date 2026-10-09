@@ -171,7 +171,7 @@ DEFAULT_PID_FALLBACK_OUTDOOR_WARM = 60.0  # °F
 
 # Demand shutoff. Two stop triggers, both requiring every thermostat idle:
 #   W (warm gate): the centred 24 h outdoor mean is at/above OUTDOOR_MIN, so
-#      1 kW is surplus and idle periods last hours. Dwell IDLE_DWELL_MIN.
+#      power_min is surplus and idle periods last hours. Dwell IDLE_DWELL_MIN.
 #   S (supply overheat): supply at/above the soft cap at any outdoor temp. The
 #      stagnant primary loop is being heated at power_min and would drift to
 #      the 140°F latch. Dwell SUPPLY_DWELL_MIN; bypasses MIN_ON.

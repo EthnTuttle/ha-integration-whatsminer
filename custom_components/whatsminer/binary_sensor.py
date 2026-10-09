@@ -137,6 +137,10 @@ class WhatsminerPIDSafetyBinarySensor(CoordinatorEntity, BinarySensorEntity):
             "demand_shutoff_active": bool(shutoff.get("active")),
             "control_mode": self._pid_state.get("control_mode"),
             "power_floor_effective": (self._pid_state.get("power_floor") or {}).get("effective"),
+            "soft_start": bool(self._pid_state.get("soft_start")),
+            "predictive": self._pid_state.get("predictive"),
+            "supply_projected": self._pid_state.get("supply_projected"),
+            "supply_slope": self._pid_state.get("supply_slope"),
         }
 
     @property

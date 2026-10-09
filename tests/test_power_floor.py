@@ -274,7 +274,9 @@ def test_pid_lifts_off_the_floor_rail_with_slowly_rising_supply(monkeypatch):
     async def go():
         await rig.setup()
         supply = 78.0
-        for _ in range(4):
+        # A restart onto a cold loop arms the soft start, which steps only once
+        # it has SLOPE_MIN_SPAN_S of samples showing the supply isn't rising.
+        for _ in range(6):
             supply += 0.05
             rig.set_supply(supply)
             rig.coord.data["uptime"] += 30

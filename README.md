@@ -41,6 +41,28 @@ All temperatures are in °F.
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
 
+## 1.8.2: soft start and predictive limiting
+
+Every resume used to overshoot. From about 88°F the PID asked for 3.5–4.2 kW, mostly integral wound up through the 10 min boot hold. The supply climbed 2.5–3.3°F/min and peaked at 124–130°F, because the zones satisfied mid-climb and left a stagnant loop with that power still arriving. The decrease interval then kept the no-demand clamp from cutting for up to 30 min. From 1.8.2:
+
+- **Soft start.** After any start the controller did not cause with a limit change (demand-shutoff resume, Mining Control on, lockout reset, firmware restart), and after an HA restart onto a loop more than the fine band below target, increases are stepped:
+  - The limit is held through the boot hold.
+  - It then steps up only while the projected supply is short of target, at most once per 12 min.
+  - Each step is Kp × that shortfall, capped at half the floor-to-`Power Max` span.
+  - The PID tracks the limit in force and takes over bumplessly once the supply is within the fine band of target.
+  - The soft start never forces a decrease.
+- **Predictive limiting.** The supply is projected 12 min ahead along its 5 min least-squares slope.
+  - Rising (≥ 0.2°F/min) and projected at or past target: no increase, and a pull-back of Kp × the predicted overshoot, gated by the increase interval.
+  - Projected at or past the supply cap, or past target with every zone idle (or a shutoff dwell running): the floor goes out at once, bypassing the throttle and boot hold like a cap, and the soft start re-arms.
+- **Settled hold.** With both the error and the projection within half the fine band of target, fine-sized changes are not sent and the integral is held. Before, the loop spent a restart every 20–40 min on ±1°F of probe dither.
+- **Anti-windup.** The integral cannot grow while a cap, the no-demand clamp, a dwell, the boot hold or a predictive limit holds the output below the PID's request.
+
+The `pid_safety_engaged` binary sensor gains `soft_start`, `predictive` (`hold`, `pull_back`, `back_off`, `settled`), `supply_projected` and `supply_slope` attributes.
+
+In a replay of the plant fitted to the 2026-10-08 history, a resume from 88°F with half the zone flow peaked at 112°F at Kp 111 (1500–5000 W) and 104.5°F at Kp 60 (1200–3500 W). The 1.8.1 controller peaked at 122.5°F and 115.4°F. With a pessimistic 12 min lag the peaks were 106°F vs 126.8°F and 105.7°F vs 114.3°F, and 6 h limit counts did not rise. Kp 111 with 20–30 min intervals still cycles in steady state (about ±6°F), so prefer the lower Kp.
+
+`Power Min` below 1500 W (for example 1200 W) needs no other change. If the miner can't hold it, the learned floor rises 250 W after two short runs, as for any limit, and restarts while the supply is hot don't count. A stagnant loop at 1200 W settles near the 122°F cap rather than about 130°F at 1500 W, so idle drift reaches the S trigger later.
+
 ## 1.8.1: the safety caps win over the learned floor
 
 On 2026-10-07 the supply sat at about 123°F, over the 122°F cap, with no zone calling. The cap forced `Power Min`, but the miner kept restarting on its own; each pair of restarts raised the learned floor, and the supply cap, the no-demand clamp and the dwell all followed the floor up to 2500 W until the 140°F lockout tripped. From 1.8.1:
@@ -156,7 +178,7 @@ Each poll, the integration decides the power limit in this order; the first that
 3. **Safety caps** (`safety_cap`): chip temp ≥ 185°F or supply ≥ 122°F forces `Power Min` on the next tick, bypassing the time throttle. A learned floor never raises it.
 4. **Demand lockout** (`demand_lockout` / `dwell`): every configured thermostat idle clamps to the effective floor (`Power Min`, or the learned floor), but never above an engaged cap's `Power Min`. With no zone calling, the zone pumps are off and the primary loop is stagnant, so there is no flow to dissipate power into. `dwell` means a shutoff dwell is also counting down.
 5. **Probe lost** (`fallback`): open-loop outdoor-reset curve.
-6. **Closed loop** (`pid`).
+6. **Closed loop** (`pid`), shaped by the soft start and predictive limiting (see *Soft start and predictive limiting*). A predictive back-off to the floor bypasses the time throttle and the boot hold like a cap.
 
 `idle` means the miner is not mining and the integration did not stop it (Mining Control off, firmware shutoff, power loss).
 
@@ -177,6 +199,21 @@ The controller now watches for restarts it did not command (an `Elapsed` regress
 
 Each raise costs one commanded restart, and a 1000 → 2000 W climb costs about five crashes and 25 min, so set `Power Min` to a limit the miner is known to hold rather than relying on learning. The learned floor is shown in the Control Mode sensor's `power_floor_*` attributes and the `floor_raised` notification. **Reset Learned Floor** clears it after the hashboards have been serviced (on the M64 a crash loop at low limits goes with error codes 560–563, slot loss of balance: reseat the adapter/ribbon, re-torque the busbar). Raising `Power Min` above the learned floor also drops it.
 
+### Soft start and predictive limiting
+
+Each limit change restarts btminer, and the supply answers late. With zones calling it responds in 2–4 min. With zones satisfying mid-climb, the loop goes stagnant and keeps rising on heat already sent for 10–15 min. So the controller projects the supply `PREDICT_HORIZON_S` (12 min) ahead along its least-squares slope over the last 5 min. A slope below 0.2°F/min counts as flat, and a jump of more than 5°F between samples restarts the window.
+
+- **No increase / pull-back**: rising and projected at or past target. The limit is not raised. It is cut by Kp × the predicted overshoot, through the normal step gates on the (shorter) increase interval.
+- **Back-off**: rising and projected at or past the supply cap, or at or past target with every zone idle or a shutoff dwell running. The floor goes out on the next tick, and the soft start re-arms.
+- **Settled**: error and projection both within half the fine band. Fine-sized changes are held, and so is the integral.
+- **Soft start**: armed by any start not caused by our own limit change, by Mining Control on, by a back-off, and by an HA restart onto a cold loop.
+  - It holds through the boot hold, then steps up only while the projection is short of target.
+  - Steps are at most one per 12 min (or per increase interval, if longer). Each is Kp × the shortfall, capped at half the floor-to-`Power Max` span.
+  - It ends within the fine band of target.
+  - While it runs, the PID integral tracks the limit in force, so a resume can't wind it up and the hand-back is bumpless.
+
+Safety caps, floor enforcement, the no-demand clamp and the dwell all keep their authority over these rules.
+
 ### Mining Control (manual override)
 
 `switch.<miner>_mining_control` is the human's emergency switch and always wins over the automation:
@@ -186,7 +223,7 @@ Each raise costs one commanded restart, and a 1000 → 2000 W climb costs about 
 
 ## Demand shutoff
 
-With every thermostat idle, the demand lockout already clamps the miner to `Power Min` (1 kW), but that still heats a stagnant primary loop. On warm days 1 kW is surplus for hours; on any day a stagnant loop can drift from the 122°F soft cap to the 140°F latch. Demand shutoff powers the miner off in both cases and powers it back on when a zone calls. The miner is the primary heat for the monitored zones, so every ambiguous case biases toward heating (fail-warm).
+With every thermostat idle, the demand lockout already clamps the miner to `Power Min` (1 kW by default), but that still heats a stagnant primary loop. On warm days 1 kW is surplus for hours; on any day a stagnant loop can drift from the 122°F soft cap to the 140°F latch. Demand shutoff powers the miner off in both cases and powers it back on when a zone calls. The miner is the primary heat for the monitored zones, so every ambiguous case biases toward heating (fail-warm).
 
 ### Triggers
 
@@ -355,6 +392,6 @@ Give each change at least 10–15 minutes to settle before judging; hydronic res
 
 Every `adjust_power_limit` call restarts the miner's mining process. To avoid thrashing, the PID only sends a command when the new value differs from the last commanded value by at least the minimum step for the current error band (250 / 150 / 50 W), **and** at least the minimum interval has passed since the last command (600 s for power-down, 300 s for power-up). Between those moments the PID math keeps running and `sensor.<miner>_pid_requested_output` keeps updating; only the actuator write is suppressed. Compare `pid_output` (last actuated) with `pid_requested_output` (what the PID wants) on Chart C to see the throttle working.
 
-Safety-cap commands bypass the time throttle and go out on the next tick. Power-limit writes are also held for 10 min after a demand-shutoff resume so the boot is not interrupted.
+Safety-cap commands and a predictive back-off bypass the time throttle and go out on the next tick. Power-limit writes are also held for 10 min after a demand-shutoff resume so the boot is not interrupted, and the soft start then spaces increases at least 12 min apart. Near target the settled hold skips fine-sized changes altogether.
 
 Tighten the step and interval for a responsive thermal target; loosen them for a large thermal mass. Set the minimum adjust interval to `0` to disable the time throttle and revert to magnitude-only.

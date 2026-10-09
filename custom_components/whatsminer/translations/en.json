@@ -81,6 +81,7 @@
         "data": {
           "pid_demand_entities": "Demand Entities (climate devices)",
           "pid_demand_shutoff_mode": "Demand Shutoff Mode",
+          "pid_autotune_mode": "PID Autotune Mode",
           "pid_demand_shutoff_outdoor_min": "Shutoff: Warm Enough Outside (°F, 24 h mean)",
           "pid_demand_shutoff_hysteresis": "Shutoff: Outdoor Hysteresis (°F)",
           "pid_demand_shutoff_idle_dwell_min": "Shutoff: Idle Dwell (minutes)",
@@ -97,6 +98,7 @@
         "data_description": {
           "pid_demand_entities": "Climate entities to monitor for heating demand. When all are idle, power is clamped to minimum and, when demand shutoff is active, the miner is powered off. Leave empty to disable demand handling.",
           "pid_demand_shutoff_mode": "off = never power the miner off for lack of demand. observe = run the full shutoff logic and publish what it would do (in the shutoff sensors) without sending any command to the miner; use this to check the timing before trusting it. active = actually power the miner off when every thermostat is idle and power it back on when heat is wanted again.",
+          "pid_autotune_mode": "off = no self-tuning. observe (default) = treat each resume and each clean step up in power as a step test, fit a loop model per number of zones calling, score every run and publish suggested Kp/Ki and predictor horizon in the Autotune State sensor, without changing anything the controller does. active = also move Kp/Ki toward the suggestion, at most 10% per parameter per day within fixed bounds, rolling back if the next runs score worse. Your Kp/Ki above stay the baseline; Reset Autotune returns to them.",
           "pid_demand_shutoff_outdoor_min": "Only consider powering off for lack of demand when the outdoor temperature, averaged over a centred 24 hour window, is at or above this. Below it, minimum power is treated as useful heat and the miner stays on. Default 58°F.",
           "pid_demand_shutoff_hysteresis": "How far the 24 hour outdoor mean must fall below the threshold above before the warm-weather shutoff disarms again. Stops the gate from flapping when the mean hovers near the line.",
           "pid_demand_shutoff_idle_dwell_min": "How long every thermostat must stay idle, with warm weather confirmed, before the miner is powered off. A short idle gap between heating calls will not trigger a stop.",

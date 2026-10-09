@@ -122,6 +122,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "demand_shutoff": {},
         "freeze_guard": {},
         "power_floor": {},          # learned floor; published by the controller
+        "autotune": {},             # self-tuning snapshot; published by the controller
+        "pid_kp": None,             # gains in force (configured or autotune overlay)
+        "pid_ki": None,
+        "pid_kd": None,
         "outdoor_mean": None,
     }
     controller = WhatsminerController(hass, entry, coordinator, pid_state, config)

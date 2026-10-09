@@ -25,6 +25,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .braiins import WORKER_STATES, BraiinsPoolCoordinator
 from .const import (
+    AUTOTUNE_STATES,
     CONTROL_MODES,
     DOMAIN,
     JOULES_PER_TERA_HASH,
@@ -272,6 +273,14 @@ SHUTOFF_STATE_SENSOR = SensorEntityDescription(
     entity_category=EntityCategory.DIAGNOSTIC,
     icon="mdi:power-sleep",
 )
+AUTOTUNE_STATE_SENSOR = SensorEntityDescription(
+    key="autotune_state",
+    name="Autotune State",
+    device_class=SensorDeviceClass.ENUM,
+    options=AUTOTUNE_STATES,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    icon="mdi:tune-variant",
+)
 
 # Braiins Pool sensors (only when a pool token is configured). Account-level
 # figures come from the profile endpoint, this miner's row from the worker
@@ -456,6 +465,7 @@ async def async_setup_entry(
         )
     entities.append(WhatsminerControlModeSensor(coordinator, pid_state))
     entities.append(WhatsminerShutoffStateSensor(coordinator, pid_state))
+    entities.append(WhatsminerAutotuneStateSensor(coordinator, pid_state))
 
     # Braiins Pool account and worker sensors, on the miner's device.
     braiins: BraiinsPoolCoordinator | None = data.get("braiins")
@@ -736,6 +746,10 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
             "power_floor_unholdable_limit": floor.get("unholdable_limit"),
             "power_floor_proven_ok": floor.get("proven_ok"),
             "restart_short_runs": floor.get("short_runs"),
+            "pid_kp": self._pid_state.get("pid_kp"),
+            "pid_ki": self._pid_state.get("pid_ki"),
+            "pid_kd": self._pid_state.get("pid_kd"),
+            "pid_gains_source": ((self._pid_state.get("autotune") or {}).get("effective") or {}).get("source"),
         }
 
 
@@ -766,6 +780,51 @@ class WhatsminerShutoffStateSensor(WhatsminerControlModeSensor):
             "trigger": shutoff.get("trigger"),
             "would_stop": shutoff.get("would_stop"),
             "would_resume": shutoff.get("would_resume"),
+        }
+
+
+class WhatsminerAutotuneStateSensor(WhatsminerControlModeSensor):
+    """Self-tuning: what it has learned, what it suggests, which gains are in force."""
+
+    def __init__(self, coordinator: WhatsminerCoordinator, pid_state: dict) -> None:
+        super().__init__(coordinator, pid_state)
+        self.entity_description = AUTOTUNE_STATE_SENSOR
+        self._attr_unique_id = f"{coordinator.data['mac']}_autotune_state"
+        self._attr_name = AUTOTUNE_STATE_SENSOR.name
+
+    @property
+    def native_value(self):
+        state = (self._pid_state.get("autotune") or {}).get("state")
+        return state if state in AUTOTUNE_STATES else "off"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        tune = self._pid_state.get("autotune") or {}
+        sugg = tune.get("suggested") or {}
+        eff = tune.get("effective") or {}
+        return {
+            "mode": tune.get("mode"),
+            "runs": tune.get("runs"),
+            "fits": tune.get("fits"),
+            "segments": tune.get("segments"),
+            "segment_open": tune.get("segment_open"),
+            "last_fit_at": tune.get("last_fit_at"),
+            "models": tune.get("models"),
+            "suggested_kp": sugg.get("kp"),
+            "suggested_ki": sugg.get("ki"),
+            "suggested_kd": sugg.get("kd"),
+            "suggested_horizon_min": sugg.get("horizon_min"),
+            "suggestion": sugg or None,
+            "effective_kp": eff.get("kp"),
+            "effective_ki": eff.get("ki"),
+            "effective_kd": eff.get("kd"),
+            "gains_source": eff.get("source"),
+            "configured": tune.get("configured"),
+            "overlay": tune.get("overlay"),
+            "last_run": tune.get("last_run"),
+            "last_fit": tune.get("last_fit"),
+            "last_reject": tune.get("last_reject"),
+            "last_event": tune.get("last_event"),
         }
 
 

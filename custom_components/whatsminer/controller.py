@@ -33,6 +33,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util.unit_conversion import TemperatureConverter
 
+from . import autotune as at
 from . import demand_shutoff as ds
 from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
@@ -40,6 +41,7 @@ from .const import (
     CONF_FREEZE_GUARD_FORECAST_HOURS,
     CONF_FREEZE_GUARD_SENSOR,
     CONF_FREEZE_GUARD_THRESHOLD,
+    CONF_PID_AUTOTUNE_MODE,
     CONF_PID_COARSE_STEP_BAND,
     CONF_PID_DEMAND_ENTITIES,
     CONF_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
@@ -85,6 +87,7 @@ from .const import (
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_FREEZE_GUARD_FORECAST_HOURS,
     DEFAULT_FREEZE_GUARD_THRESHOLD,
+    DEFAULT_PID_AUTOTUNE_MODE,
     DEFAULT_PID_COARSE_STEP_BAND,
     DEFAULT_PID_DEMAND_ENTITIES,
     DEFAULT_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
@@ -402,12 +405,30 @@ class WhatsminerController:
             out_max=float(self._power_max),
             sampling_period=0,
         )
+        # Self-tuning (autotune.py). Observe mode only reads; the configured
+        # gains stay the baseline and an active-mode overlay goes through
+        # _apply_gains. Separate Store so its data can't break the one above.
+        self._autotuner = at.Autotuner(
+            at.TunerConfig(
+                mode=str(g(CONF_PID_AUTOTUNE_MODE, DEFAULT_PID_AUTOTUNE_MODE)),
+                kp=self._kp,
+                ki=float(g(CONF_PID_KI, DEFAULT_PID_KI)),
+                kd=float(g(CONF_PID_KD, DEFAULT_PID_KD)),
+                supply_cap=self._supply_temp_safety_cap,
+                interval_increase_s=float(self._min_adjust_interval_increase),
+            )
+        )
+        self._autotune_store: Store = Store(hass, at.STORE_VERSION, f"{DOMAIN}.{entry.entry_id}.autotune")
+        self._autotune_tick: tuple | None = None
+        self._ki = self._autotuner.cfg.ki  # in force, published as pid_ki
+        self._autotune_failed_logged = False
         self._pid_state.setdefault("lockout_latched", False)
         if self._pid_state.get("target") is None:
             self._pid_state["target"] = self._default_target
         self._publish_shutoff(ds.Decision(ds.NONE, "starting", (), self._shutoff))
         self._publish_freeze(None, None, None)
         self._publish_floor()
+        self._publish_autotune()
         self._pid_state["control_mode"] = "idle"
 
     # ------------------------------------------------------------------ setup
@@ -470,6 +491,7 @@ class WhatsminerController:
             )
         self._publish_floor()
         self._publish_shutoff(ds.Decision(ds.NONE, "restored", (), self._shutoff))
+        await self._restore_autotune()
         self._unsub_coordinator = self.coordinator.async_add_listener(
             self._handle_coordinator_update
         )
@@ -497,6 +519,12 @@ class WhatsminerController:
             except (asyncio.TimeoutError, Exception) as err:  # noqa: BLE001
                 _LOGGER.warning("Control step still running at unload: %s", err)
         await self._save()
+        try:
+            if self._autotuner.mode != "off":
+                self._autotuner.close(time())
+        except Exception:  # noqa: BLE001 — autotune must never block an unload
+            _LOGGER.exception("Autotune close failed")
+        await self._save_autotune()
 
     @callback
     def _handle_timer(self, _now: datetime) -> None:
@@ -535,6 +563,13 @@ class WhatsminerController:
 
     def _save_later(self) -> None:
         self._store.async_delay_save(self._store_data, 60)
+
+    async def _save_autotune(self) -> None:
+        try:
+            await self._autotune_store.async_save(self._autotuner.to_dict())
+            self._autotuner.dirty = False
+        except Exception as err:  # never let persistence break control
+            _LOGGER.error("Failed to persist autotune data: %s", err)
 
     # ------------------------------------------------------------ user hooks
 
@@ -620,6 +655,21 @@ class WhatsminerController:
         self._publish_floor()
         self.coordinator.async_update_listeners()
 
+    async def async_reset_autotune(self) -> None:
+        """Forget the learned models and run history and drop the gain overlay."""
+        async with self._step_lock:
+            had = self._autotuner.effective()
+            self._autotuner.reset()
+            self._apply_gains(self._autotuner.effective())
+            await self._save_autotune()
+        _LOGGER.warning(
+            "Autotune reset — models and run history cleared; gains are the configured "
+            "Kp %.4g / Ki %.4g (were %.4g / %.4g, %s)",
+            self._kp, self._ki, had.kp, had.ki, had.source,
+        )
+        self._publish_autotune()
+        self.coordinator.async_update_listeners()
+
     # --------------------------------------------------------- coordinator
 
     @callback
@@ -700,6 +750,7 @@ class WhatsminerController:
                 await self._control_step()
             except Exception:  # defensive — never break the coordinator loop
                 _LOGGER.exception("Whatsminer control step failed")
+            self._feed_autotune()
             # Entities rendered pid_state before this tick updated it.
             self.coordinator.async_update_listeners()
 
@@ -725,6 +776,8 @@ class WhatsminerController:
         gate_mean = self._update_outdoor_mean(now, forecast)
         summary, calling, unknown, demand_index = self._demand_snapshot(now)
         self._pid_state["demand_index"] = demand_index
+        # Fed to the autotuner after this step has decided (_feed_autotune).
+        self._autotune_tick = (now, temp, fresh, is_mining, len(calling))
 
         # --- supply lockout -----------------------------------------------
         if not latched and temp is not None and temp >= self._supply_temp_lockout:
@@ -1466,6 +1519,11 @@ class WhatsminerController:
         except Exception as err:
             _LOGGER.error("Failed to set power limit to %dW: %s", new_power, err)
             return
+        try:
+            if self._autotuner.mode != "off":
+                self._autotuner.note_command(time(), float(new_power))
+        except Exception:  # noqa: BLE001 — observation only
+            self._autotune_failure()
         if floor_fire:
             # The raise was only scheduled for persistence (callback context);
             # make sure an HA crash right after this restart can't lose it.
@@ -1752,6 +1810,105 @@ class WhatsminerController:
             "exhausted": self._floor_exhausted,
             "run_uptime_s": self._last_uptime,
         }
+
+    # -------------------------------------------------------------- autotune
+
+    async def _restore_autotune(self) -> None:
+        tuner = self._autotuner
+        try:
+            note = tuner.load(await self._autotune_store.async_load())
+            if note:
+                _LOGGER.warning("Autotune: %s", note)
+        except Exception:  # noqa: BLE001 — bad data must not stop the setup
+            _LOGGER.exception("Autotune data could not be restored — starting fresh")
+            tuner.reset()
+        try:
+            gains = tuner.effective()
+            self._apply_gains(gains)
+            if gains.source == "autotune":
+                _LOGGER.warning(
+                    "Autotune gains in effect: Kp %.4g / Ki %.4g (configured %.4g / %.4g) — "
+                    "press Reset Autotune to return to the configured gains",
+                    gains.kp, gains.ki, tuner.cfg.kp, tuner.cfg.ki,
+                )
+        except Exception:  # noqa: BLE001
+            self._autotune_failure()
+        self._publish_autotune()
+
+    def _feed_autotune(self) -> None:
+        """Hand this tick to the autotuner. Read-only unless active mode moves the gains."""
+        tick, self._autotune_tick = self._autotune_tick, None
+        tuner = self._autotuner
+        try:
+            if tuner.mode != "off" and tick is not None:
+                now, temp, fresh, is_mining, calling = tick
+                data = self.coordinator.data
+                power = 0.0
+                if is_mining:
+                    # What the miner draws (heat in); the limit if it isn't reported.
+                    draw = float(data.get("wattage") or 0)
+                    power = draw if draw > 0 else float(data.get("wattage_limit") or 0)
+                gains = tuner.observe(
+                    at.Obs(
+                        t=now, supply=temp, target=self._target(), fresh=fresh, mining=is_mining,
+                        power_w=power, calling=calling, mode=str(self._pid_state.get("control_mode")),
+                        soft_start=self._soft_start,
+                    )
+                )
+                if gains is not None:
+                    self._apply_gains(gains)
+            if tuner.dirty:
+                tuner.dirty = False
+                self._autotune_store.async_delay_save(tuner.to_dict, 60)
+            self._publish_autotune()
+        except Exception:  # noqa: BLE001 — never let autotune touch control
+            self._autotune_failure()
+
+    def _apply_gains(self, gains: at.Gains) -> None:
+        """Put kp/ki in force (overlay or configured), bumplessly.
+
+        self._kp also sizes the bumpless seed, soft-start steps and the
+        predictive pull-back, so it moves with the PID. The integral takes
+        up the change in Kp·error so the next output is where this one was.
+        kd is never changed.
+        """
+        kp, ki = float(gains.kp), float(gains.ki)
+        if kp == self._kp and ki == self._ki:
+            return
+        old_kp = self._kp
+        self._kp, self._ki = kp, ki
+        self._pid.set_pid_param(kp=kp, ki=ki)
+        try:
+            self._pid.integral = float(self._pid.integral + (old_kp - kp) * float(self._pid.error or 0.0))
+        except (TypeError, ValueError, AssertionError):
+            pass
+        _LOGGER.warning("PID gains now Kp %.4g / Ki %.4g (%s)", kp, ki, gains.source)
+        self._publish_autotune()
+
+    def _autotune_failure(self) -> None:
+        if not self._autotune_failed_logged:
+            self._autotune_failed_logged = True
+            _LOGGER.exception("Autotune failed — control is unaffected; further failures logged at debug")
+        else:
+            _LOGGER.debug("Autotune failed again", exc_info=True)
+
+    def _publish_autotune(self) -> None:
+        self._pid_state["pid_kp"] = self._kp
+        self._pid_state["pid_ki"] = self._ki
+        self._pid_state["pid_kd"] = self._autotuner.cfg.kd
+        try:
+            snap = self._autotuner.snapshot()
+            snap["last_fit_at"] = _iso(snap["last_fit_at"])
+            for key in ("last_run", "last_fit", "last_reject", "last_event"):
+                if snap.get(key):
+                    item = dict(snap[key])
+                    for ts in ("t", "start"):
+                        if item.get(ts) is not None:
+                            item[ts] = _iso(item[ts])
+                    snap[key] = item
+            self._pid_state["autotune"] = snap
+        except Exception:  # noqa: BLE001
+            self._autotune_failure()
 
     # ------------------------------------------------------------ prediction
 

@@ -59,6 +59,7 @@ CONF_PID_FALLBACK_OUTDOOR_COLD = "pid_fallback_outdoor_cold"
 CONF_PID_FALLBACK_OUTDOOR_WARM = "pid_fallback_outdoor_warm"
 # Demand shutoff (power the miner off when every thermostat is idle)
 CONF_PID_DEMAND_SHUTOFF_MODE = "pid_demand_shutoff_mode"
+CONF_PID_AUTOTUNE_MODE = "pid_autotune_mode"
 CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = "pid_demand_shutoff_outdoor_min"
 CONF_PID_DEMAND_SHUTOFF_HYSTERESIS = "pid_demand_shutoff_hysteresis"
 CONF_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = "pid_demand_shutoff_idle_dwell_min"
@@ -183,6 +184,10 @@ DEFAULT_PID_FALLBACK_OUTDOOR_WARM = 60.0  # °F
 # biases toward heating (fail-warm).
 DEMAND_SHUTOFF_MODES = ["off", "observe", "active"]
 DEFAULT_PID_DEMAND_SHUTOFF_MODE = "off"
+# Self-tuning (1.9.0): off, observe (learn and publish only), active (applies
+# small, rate-limited kp/ki moves as an overlay on the configured gains).
+AUTOTUNE_MODES = ["off", "observe", "active"]
+DEFAULT_PID_AUTOTUNE_MODE = "observe"
 DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = 58.0  # °F, centred 24 h mean
 DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS = 4.0  # °F
 DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = 30
@@ -244,3 +249,4 @@ CONTROL_MODES = [
     "idle",           # miner not mining and we did not stop it
 ]
 SHUTOFF_STATES = ["disabled", "running", "dwell", "stopped", "resuming", "suppressed"]
+AUTOTUNE_STATES = ["off", "learning", "ready", "active", "evaluating", "rolled_back"]

@@ -141,6 +141,9 @@ class WhatsminerPIDSafetyBinarySensor(CoordinatorEntity, BinarySensorEntity):
             "predictive": self._pid_state.get("predictive"),
             "supply_projected": self._pid_state.get("supply_projected"),
             "supply_slope": self._pid_state.get("supply_slope"),
+            "pid_kp": self._pid_state.get("pid_kp"),
+            "pid_ki": self._pid_state.get("pid_ki"),
+            "pid_kd": self._pid_state.get("pid_kd"),
         }
 
     @property

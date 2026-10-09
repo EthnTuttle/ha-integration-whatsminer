@@ -30,6 +30,7 @@ from .const import (
     CONF_FREEZE_GUARD_FORECAST_HOURS,
     CONF_FREEZE_GUARD_SENSOR,
     CONF_FREEZE_GUARD_THRESHOLD,
+    CONF_PID_AUTOTUNE_MODE,
     CONF_PID_INTEGRAL_BAND,
     CONF_PID_KD,
     CONF_PID_KE,
@@ -82,6 +83,7 @@ from .const import (
     DEFAULT_PID_KE,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
+    DEFAULT_PID_AUTOTUNE_MODE,
     DEFAULT_PID_COARSE_STEP_BAND,
     DEFAULT_PID_DEMAND_ENTITIES,
     DEFAULT_PID_DEMAND_SHUTOFF_COLD_ROOM_DELTA,
@@ -114,6 +116,7 @@ from .const import (
     DEFAULT_POWER_MIN,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SUPER_PASSWORD,
+    AUTOTUNE_MODES,
     DEMAND_SHUTOFF_MODES,
     DOMAIN,
 )
@@ -366,6 +369,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_PID_DEMAND_SHUTOFF_MODE, DEFAULT_PID_DEMAND_SHUTOFF_MODE
                         ),
                     ): vol.In(DEMAND_SHUTOFF_MODES),
+                    vol.Optional(
+                        CONF_PID_AUTOTUNE_MODE,
+                        default=self._current_data.get(
+                            CONF_PID_AUTOTUNE_MODE, DEFAULT_PID_AUTOTUNE_MODE
+                        ),
+                    ): vol.In(AUTOTUNE_MODES),
                     vol.Optional(
                         CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN,
                         default=self._current_data.get(

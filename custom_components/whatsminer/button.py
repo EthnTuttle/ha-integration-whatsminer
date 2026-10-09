@@ -25,6 +25,7 @@ async def async_setup_entry(
         [
             WhatsminerResetLockoutButton(data["coordinator"], data),
             WhatsminerResetFloorButton(data["coordinator"], data),
+            WhatsminerResetAutotuneButton(data["coordinator"], data),
         ]
     )
 
@@ -93,3 +94,22 @@ class WhatsminerResetFloorButton(WhatsminerResetLockoutButton):
         if controller is None:
             raise HomeAssistantError("Controller is not set up yet")
         await controller.async_reset_learned_floor()
+
+
+class WhatsminerResetAutotuneButton(WhatsminerResetLockoutButton):
+    """Forget the autotune models and run history and return to the configured gains."""
+
+    _attr_icon = "mdi:tune-variant"
+
+    def __init__(self, coordinator: WhatsminerCoordinator, data: dict) -> None:
+        """Initialize the button."""
+        super().__init__(coordinator, data)
+        self._attr_unique_id = f"{coordinator.data['mac']}_reset_autotune"
+        self._attr_name = "Reset Autotune"
+
+    async def async_press(self) -> None:
+        """Clear what autotune learned and drop its gain overlay."""
+        controller = self._data.get("controller")
+        if controller is None:
+            raise HomeAssistantError("Controller is not set up yet")
+        await controller.async_reset_autotune()

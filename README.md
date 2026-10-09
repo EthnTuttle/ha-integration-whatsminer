@@ -13,10 +13,11 @@ All temperatures are in °F.
 - **Fan sensors**: Fan Speed (RPM), when applicable
 - **Binary sensors**: Mining Status; PID Safety Engaged (a cap or lockout is clamping output); Demand Shutoff (on while the integration owns a stop); Freeze Guard (on while freeze risk blocks stops)
 - **Switch**: Mining Control. This is the manual emergency override: off stops mining and is never auto-resumed; on clears any stop the integration owns.
-- **Buttons**: Reset Supply Lockout (clears the latched 140°F supply lockout); Reset Learned Floor (forgets a learned power floor after the miner has been serviced)
+- **Buttons**: Reset Supply Lockout (clears the latched 140°F supply lockout); Reset Learned Floor (forgets a learned power floor after the miner has been serviced); Reset Autotune (clears learned models and run history, returns to the configured gains)
 - **Number**: PID Target Temperature (setpoint, dashboard-adjustable)
-- **Control Mode sensor** (enum): `pid`, `fallback`, `demand_lockout`, `safety_cap`, `dwell`, `stopped`, `resuming`, `latched`, `idle`. Attributes carry the full shutoff and freeze-guard picture: `supply_lockout_latched`, `demand_shutoff_state`, `demand_shutoff_reason`, `demand_shutoff_blocking`, `demand_shutoff_since`, `demand_shutoff_gate`, `freeze_guard_active`, `freeze_guard_source`, `freeze_guard_value`, `power_floor_effective`, `power_floor_learned`, `power_floor_unholdable_limit`, `power_floor_proven_ok`, `restart_short_runs`
+- **Control Mode sensor** (enum): `pid`, `fallback`, `demand_lockout`, `safety_cap`, `dwell`, `stopped`, `resuming`, `latched`, `idle`. Attributes carry the full shutoff and freeze-guard picture: `supply_lockout_latched`, `demand_shutoff_state`, `demand_shutoff_reason`, `demand_shutoff_blocking`, `demand_shutoff_since`, `demand_shutoff_gate`, `freeze_guard_active`, `freeze_guard_source`, `freeze_guard_value`, `power_floor_effective`, `power_floor_learned`, `power_floor_unholdable_limit`, `power_floor_proven_ok`, `restart_short_runs`, `pid_kp`, `pid_ki`, `pid_kd` (gains in force)
 - **Demand Shutoff State sensor** (enum): `disabled`, `running`, `dwell`, `stopped`, `resuming`, `suppressed`
+- **Autotune State sensor** (enum): `off`, `learning`, `ready`, `active`, `evaluating`, `rolled_back`; attributes carry the per-zone-bucket models, suggested Kp/Ki/horizon, gains in force and the last run's scores (see Autotune)
 - **Outdoor 24h Mean sensor** (°F): the centred 24 h outdoor mean used as the warm gate
 - **PID diagnostic sensors**: Target, Error, Proportional, Integral, Derivative, Output, Requested Output, Demand Index, External Compensation, effective output bounds, PV slope
 - **PID is always on.** The power limit is driven from a **required** external supply temperature probe. There is no manual power-limit slider and no PID on/off switch. The miner's own chip temperature is deliberately not a PID input (it is noisy and the firmware already self-manages thermals); it is only a veto on output.
@@ -40,6 +41,18 @@ All temperatures are in °F.
 1. Copy the `custom_components/whatsminer` folder into your HA `custom_components` directory
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
+
+## 1.9.0: autotune (observe by default)
+
+The controller now learns the loop from its own resumes and reports what gains it would use (see *Autotune*). New option **PID Autotune Mode** in the Demand step: `off`, `observe` (default), `active`.
+
+- **Observe changes nothing.** The controller sends the same commands at the same times with the same PID internals as 1.8.2. A test replays three resume scenarios with `off` and with `observe` and compares every command and every tick.
+- **Learns.** Every resume, and every clean step up in power while the supply is well below target, is a step test. It fits a dead-time-plus-lag model per number of zones calling (1, 2, 3+) and scores each run: overshoot, time to band, oscillation, commands per hour, minutes over the cap.
+- **Suggests.** Kp and Ki by the SIMC rule and a predictor horizon, shown in the new **Autotune State** sensor.
+- **Active** moves Kp/Ki at most 10% per parameter per day toward the suggestion, inside fixed bounds, and rolls back if the next runs score worse. Your configured Kp/Ki stay the baseline. The new **Reset Autotune** button clears what was learned and returns to them.
+- Gains in force are now reported as `pid_kp`, `pid_ki` and `pid_kd` on the Control Mode sensor and the PID Safety binary sensor.
+
+No config migration. Learned data is kept in its own store (`.storage/whatsminer.<entry>.autotune`) and survives restarts. The 122°F cap, the 140°F lockout, the demand-shutoff triggers and `Power Min`/`Power Max` are never touched.
 
 ## 1.8.2: soft start and predictive limiting
 
@@ -129,6 +142,7 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | External Temperature Sensor | — | **Required.** The supply probe the PID regulates. Any HA `sensor` with `device_class: temperature`. |
 | Demand Entities | `[]` | `climate` entities whose `hvac_action` indicates heating demand. Empty disables demand lockout and demand shutoff. |
 | Demand Shutoff Mode | `off` | `off`, `observe`, `active` (see Demand shutoff) |
+| PID Autotune Mode | `observe` | `off`, `observe`, `active` (see Autotune) |
 | Shutoff Outdoor Min | `58` °F | Warm gate: centred 24 h outdoor mean at/above this arms Trigger W |
 | Shutoff Hysteresis | `4` °F | Gate disarms when the mean falls below Outdoor Min minus this |
 | Idle Dwell | `30` min | All-idle time required before a Trigger W stop |
@@ -269,6 +283,122 @@ From about 40 shoulder-season days (April–May 2026) of HA statistics and about
 
 Set Demand Shutoff Mode to **`off`**. If the integration owns a stop at that moment, the miner is powered back on (unless the supply lockout is latched, in which case only ownership is cleared). Lockout behaviour (idle → power_min) is unchanged by the mode.
 
+## Autotune
+
+Self-tuning for the PID gains. It watches the loop and fits a model, then turns the model into suggested gains. In `active` mode it moves the gains slowly toward the suggestion. It never sends a miner command of its own, and any error inside it is logged and ignored by the control loop.
+
+### Modes
+
+| Mode | Learns and publishes | Changes the gains |
+|------|----------------------|-------------------|
+| `off` | no | no (configured Kp/Ki/Kd) |
+| `observe` (default) | yes | no. Control is identical to `off` |
+| `active` | yes | yes, within the limits below |
+
+Switching from `active` back to `observe` or `off` puts the configured gains back at once (the overlay is kept but ignored). Changing Kp or Ki in the options drops the overlay: the new values are the baseline.
+
+### What it learns
+
+**Step tests.** A segment opens when the soft start arms on a start (a resume, Mining Control on, an HA restart onto a cold loop), or when the controller raises the limit by 200 W or more. In both cases the supply must be more than 2°F below target with at least one zone calling. The 20 min before the trigger are kept as input history.
+
+A segment ends after 120 min, or when one of these happens:
+
+- the number of zones calling changes bucket;
+- a safety cap, lockout, fallback, no-demand clamp, dwell or shutoff takes over;
+- the miner is off for 5 min;
+- the probe drops out or jumps more than 5°F between readings.
+
+What it recorded up to then is fitted.
+
+**Model.** First order plus dead time: `tau · dT/dt = −(T − Tb) + K · P(t − θ)`.
+
+- `P` is the miner's reported draw in kW. While hashing without a reported draw, the limit is used instead. While not hashing, `P` is 0, so the restart blackouts are part of the input.
+- It is fitted by least squares on a 1 min grid.
+- The start temperature and the baseline `Tb` are fitted too, so a resume that starts on a cooling loop is fine. So is any input shape: soft-start steps, restarts, the PID taking over.
+- Units:
+  - `K` (gain) is °F per kW at steady state.
+  - `tau` (time constant) is in minutes.
+  - `theta` (θ, dead time) is in minutes.
+  - `rate` (`K/tau`) is °F/min per kW. It is the most robust number, because it comes from the first minutes of the climb.
+
+**Rejected segments** count toward `segments` but not `fits`. The reason shows in `last_reject`. A segment is rejected when:
+
+- it has less than 20 min after the trigger;
+- the supply moved less than 3°F, or the input less than 0.4 kW;
+- the gain is outside 1–100°F/kW (or negative);
+- the dead time is at the 15 min search limit;
+- the RMS error is over 0.75°F or R² is under 0.9.
+
+**Buckets.** Fits are kept per zones-calling bucket `1`, `2` and `3+`, because the open zones set the flow and with it the gain and time constant. Each bucket's model is the median of its last 5 fits, keeping 8 per bucket.
+
+**Runs.** A run is mining with no gap of 5 min or more. The restarts that limit changes cause don't split it. Runs are capped at 6 h, and runs under 30 min are not scored. The last 60 are kept. Only minutes with a zone calling and the PID (or the supply cap) in charge count, because a stagnant all-idle loop drifting up on the floor says nothing about the gains. Scores:
+
+- `peak_overshoot_f`: the highest point above target.
+- `time_to_band_min`: time to come within ±2°F of target.
+- `oscillation_f`: half the 5–95% spread of the error, from 15 min after reaching the band, once 30 min of that exist.
+- `commands_per_hour`.
+- `above_cap_min`: minutes at or above the supply cap.
+- `cost`: overshoot + 2 × oscillation + commands/h + 0.5 × minutes over the cap.
+
+### Suggested gains (SIMC)
+
+For each bucket model, per Skogestad's SIMC rule:
+
+- `θe = θ + Min Adjust Interval (increase) / 2`, because the PID can act no faster than its increase throttle.
+- `τc = max(θe, 10 min)`. τc is the tuning parameter. Setting τc to θe is SIMC's "tight but robust" choice. The 10 min floor keeps a short interval from asking for a fast, restart-hungry loop.
+- `Kp = tau / (K · (τc + θe))`. This equals `1 / (rate · (τc + θe))`, so Kp depends only on the robust rate.
+- `Ki = Kp / τI`, with `τI = min(tau, 4 · (τc + θe))` in seconds.
+
+The buckets are combined by a weighted mean, weighted by the time the PID spent in each bucket, so the usual zone pattern dominates. Kd is not tuned. A SIMC FOPDT design is PI, the derivative of a 0.1125°F probe polled every 15 s is mostly quantisation, and the predictor already anticipates. The configured Kd always stays.
+
+The suggested **predictor horizon** is `θ + tau` (the largest over buckets), clamped to 6–20 min. It is published only. The predictor keeps its 12 min.
+
+At least 2 good fits are needed before anything is suggested.
+
+### Hard bounds and active-mode limits
+
+| | |
+|---|---|
+| Kp | 20–150 W/°F |
+| Ki | 0.005–0.3 W/(°F·s) |
+| Horizon (suggestion only) | 6–20 min |
+| Step | at most 10% of the current value per parameter, ignored under 3% |
+| Rate | at most one step per 24 h, decided when a run ends |
+| Prerequisites | 3 good fits and 3 scored runs |
+| Evaluation | the next 3 runs of at least 1 h are compared with the median cost of the 3 runs before the step |
+| Rollback | evaluated median > 1.25 × baseline + 1.0 → previous gains, no step for 3 days |
+
+A gain change is bumpless. The integral absorbs the change in Kp × error, and Kp also sizes the bumpless seed, the soft-start steps and the predictive pull-back. The supply cap, the lockout, the demand shutoff and `Power Min`/`Power Max` are outside autotune entirely.
+
+### Reading the Autotune State sensor
+
+The state is one of these:
+
+| State | Meaning |
+|-------|---------|
+| `off` | autotune is off |
+| `learning` | not enough fits for a suggestion yet |
+| `ready` | a suggestion exists (observe mode, or active mode with no step taken) |
+| `active` | an active-mode overlay is in force |
+| `evaluating` | a step was taken and the following runs are being scored |
+| `rolled_back` | the last step was undone; in cooldown |
+
+Attributes:
+
+- **Counts:** `mode`, `runs`, `fits`, `segments` (fits plus rejects), `segment_open`, `last_fit_at`.
+- **`models`:** per bucket, the median `k_f_per_kw`, `tau_min`, `theta_min`, `rate_f_min_per_kw` and the number of fits.
+- **Suggestions:**
+  - `suggested_kp`, `suggested_ki`, `suggested_kd` (always empty: not tuned) and `suggested_horizon_min`.
+  - `suggestion` holds those values with the unclamped versions and the bucket weights.
+- **Gains:** `effective_kp`, `effective_ki`, `effective_kd`, `gains_source` (`configured` or `autotune`), `configured`, `overlay`.
+- **Latest records:**
+  - `last_run` holds the scores and gains used.
+  - `last_fit` holds the fit and its RMSE, R², trigger and end reason.
+  - `last_reject` holds the reason.
+  - `last_event` records the latest step, kept or rollback.
+
+To use a suggestion by hand in `observe`, wait for several fits in your usual zone pattern. Check that `models` agree across fits (look at `last_fit` after each resume), then enter `suggested_kp` and `suggested_ki` in the options. **Reset Autotune** clears all learned data and the overlay.
+
 ## Freeze guard
 
 The M64's own coolant loop runs outdoors and can freeze while the miner is stopped. Freeze guard blocks every stop trigger, Trigger W, Trigger S and the 140°F supply lockout latch, and immediately resumes any stop the integration owns while the freeze source reads at/below **Freeze Guard Threshold**. `binary_sensor.<miner>_freeze_guard` is on while this is in force; the Control Mode attributes report `freeze_guard_source` and `freeze_guard_value`. It does not override Mining Control: a stop the user made is left alone.
@@ -385,6 +515,8 @@ Defaults (Kp=111.11 W/°F, Ki=2.78, Kd=55.56, target 167°F) are a conservative 
 3. **Halve Kp** to damp the oscillation.
 4. **Add small Ki** to eliminate steady-state error. Watch Chart B; if the integral term runs away, Ki is too high.
 5. **Add small Kd** to reduce overshoot. If Chart B shows noisy D, your scan interval is probably too short.
+
+The Autotune State sensor's `suggested_kp` / `suggested_ki` (see Autotune) are a model-based alternative to this recipe.
 
 Give each change at least 10–15 minutes to settle before judging; hydronic response is slow. Capture a run with `scripts/pid-capture.py` and report on it with `scripts/pid-analyze.py` (pass two captures for a side-by-side comparison).
 

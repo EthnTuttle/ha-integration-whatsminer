@@ -1,0 +1,776 @@
+# Lovelace dashboard 'heatcore-overview', exported from Home Assistant.
+# Reference copy only: HA stores this dashboard in .storage and does not read this file.
+# To restore: dashboard ⋮ → Edit → Raw configuration editor, paste, save.
+views:
+- title: Overview
+  path: overview
+  icon: mdi:view-dashboard
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Boiler
+      icon: mdi:water-boiler
+      badges:
+      - type: entity
+        entity: sensor.main_boiler_supply_heatcore_control_mode
+        show_state: true
+        show_icon: true
+    - type: tile
+      entity: sensor.scout_21_temperature_probe
+      name: Supply
+      icon: mdi:pipe
+      color: deep-orange
+      grid_options:
+        columns: 6
+      features:
+      - type: trend-graph
+        hours_to_show: 6
+    - type: tile
+      entity: number.heatcore_pid_target_temperature
+      name: Target
+      icon: mdi:thermometer-lines
+      grid_options:
+        columns: 6
+      features:
+      - type: numeric-input
+        style: buttons
+    - type: tile
+      entity: binary_sensor.heatcore_pid_safety_engaged
+      name: Safety cap engaged
+      color: red
+      grid_options:
+        columns: 6
+      visibility:
+      - condition: state
+        entity: binary_sensor.heatcore_pid_safety_engaged
+        state: 'on'
+    - type: tile
+      entity: binary_sensor.main_boiler_supply_heatcore_freeze_guard
+      name: Freeze guard
+      color: light-blue
+      grid_options:
+        columns: 6
+      visibility:
+      - condition: state
+        entity: binary_sensor.main_boiler_supply_heatcore_freeze_guard
+        state: 'on'
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_demand_shutoff_state
+      name: Demand shutoff
+      icon: mdi:power-sleep
+      grid_options:
+        columns: 6
+      visibility:
+      - condition: state
+        entity: sensor.main_boiler_supply_heatcore_demand_shutoff_state
+        state_not: disabled
+    - type: tile
+      entity: button.main_boiler_supply_heatcore_reset_supply_lockout
+      name: Reset supply lockout
+      color: red
+      grid_options:
+        columns: 12
+      tap_action:
+        action: perform-action
+        perform_action: button.press
+        target:
+          entity_id: button.main_boiler_supply_heatcore_reset_supply_lockout
+        confirmation:
+          text: Reset the 140°F supply lockout and let the miner restart?
+      visibility:
+      - condition: state
+        entity: sensor.main_boiler_supply_heatcore_control_mode
+        state: latched
+  - type: grid
+    cards:
+    - type: heading
+      heading: Zones
+      icon: mdi:home-thermometer
+    - type: tile
+      entity: climate.den
+      name: Den
+      state_content:
+      - hvac_action
+      - current_temperature
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: climate.great_room
+      name: Great Room
+      state_content:
+      - hvac_action
+      - current_temperature
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: climate.back_bedroom
+      name: Back Bedroom
+      state_content:
+      - hvac_action
+      - current_temperature
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: climate.windowed_bedroom
+      name: Windowed Bedroom
+      state_content:
+      - hvac_action
+      - current_temperature
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: weather.forecast_home
+      name: Outside
+      grid_options:
+        columns: 12
+      features:
+      - type: temperature-forecast
+        forecast_type: hourly
+        hours_to_show: 12
+  - type: grid
+    cards:
+    - type: heading
+      heading: Miner
+      icon: mdi:pickaxe
+      badges:
+      - type: entity
+        entity: binary_sensor.heatcore_mining_status
+        show_state: true
+        show_icon: true
+    - type: tile
+      entity: sensor.heatcore_hashrate
+      name: Hashrate
+      color: blue
+      grid_options:
+        columns: 6
+      features:
+      - type: trend-graph
+        hours_to_show: 6
+    - type: tile
+      entity: sensor.heatcore_power_consumption
+      name: Power
+      icon: mdi:flash
+      color: amber
+      grid_options:
+        columns: 6
+      features:
+      - type: trend-graph
+        hours_to_show: 6
+    - type: tile
+      entity: sensor.heatcore_power_limit
+      name: Limit
+      icon: mdi:flash-outline
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: switch.heatcore_mining_control
+      name: Mining control
+      color: green
+      grid_options:
+        columns: 6
+      tap_action:
+        action: more-info
+      icon_tap_action:
+        action: more-info
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_energy_today
+      name: Energy today
+      icon: mdi:lightning-bolt
+      color: amber
+      grid_options:
+        columns: 12
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Last 24 hours
+      heading_style: subtitle
+      icon: mdi:chart-line
+    - type: history-graph
+      title: Supply vs target
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 6
+      entities:
+      - entity: sensor.scout_21_temperature_probe
+        name: Supply
+        color: deep-orange
+      - entity: sensor.heatcore_pid_target_temperature
+        name: Target
+        color: grey
+    - type: history-graph
+      title: Power draw
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 6
+      entities:
+      - entity: sensor.heatcore_power_consumption
+        name: Draw
+        color: amber
+      - entity: sensor.heatcore_power_limit
+        name: Limit
+        color: grey
+    - type: history-graph
+      title: Hashrate
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 6
+      entities:
+      - entity: sensor.heatcore_hashrate
+        name: Actual
+        color: blue
+      - entity: sensor.heatcore_expected_hashrate
+        name: Expected
+        color: grey
+    - type: heading
+      heading: Energy per day
+      heading_style: subtitle
+      icon: mdi:lightning-bolt
+    - type: statistics-graph
+      title: Miner energy (kWh/day)
+      entities:
+      - sensor.main_boiler_supply_heatcore_energy
+      stat_types:
+      - change
+      chart_type: bar
+      period: day
+      days_to_show: 14
+      grid_options:
+        columns: full
+        rows: 5
+    - type: statistics-graph
+      title: Pool reward (BTC/day)
+      entities:
+      - sensor.main_boiler_supply_heatcore_pool_all_time_reward
+      stat_types:
+      - change
+      chart_type: bar
+      period: day
+      days_to_show: 14
+      grid_options:
+        columns: full
+        rows: 5
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Controls
+      icon: mdi:tune
+    - type: tile
+      entity: switch.heatcore_mining_control
+      name: Mining control
+      color: green
+      grid_options:
+        columns: 6
+      features:
+      - type: toggle
+    - type: tile
+      entity: number.heatcore_pid_target_temperature
+      name: PID target
+      icon: mdi:thermometer-lines
+      grid_options:
+        columns: 6
+      features:
+      - type: numeric-input
+        style: buttons
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pid_out_min_effective
+      name: Effective floor
+      icon: mdi:arrow-collapse-down
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pid_out_max_effective
+      name: Effective ceiling
+      icon: mdi:arrow-collapse-up
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.heatcore_power_limit
+      name: Applied limit
+      icon: mdi:flash-outline
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: button.main_boiler_supply_heatcore_reset_learned_floor
+      name: Reset learned floor
+      icon: mdi:restore
+      color: orange
+      grid_options:
+        columns: 6
+      tap_action:
+        action: perform-action
+        perform_action: button.press
+        target:
+          entity_id: button.main_boiler_supply_heatcore_reset_learned_floor
+        confirmation:
+          text: Forget the learned power floor and fall back to the configured minimum?
+    - type: tile
+      entity: button.main_boiler_supply_heatcore_reset_supply_lockout
+      name: Reset supply lockout
+      icon: mdi:lock-reset
+      color: red
+      grid_options:
+        columns: 6
+      tap_action:
+        action: perform-action
+        perform_action: button.press
+        target:
+          entity_id: button.main_boiler_supply_heatcore_reset_supply_lockout
+        confirmation:
+          text: Reset the 140°F supply lockout? Only works once supply is below the 122°F cap; it does not turn mining back
+            on.
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_autotune_state
+      name: Autotune
+      icon: mdi:tune-variant
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: button.main_boiler_supply_heatcore_reset_autotune
+      name: Reset autotune
+      icon: mdi:restore-alert
+      color: orange
+      grid_options:
+        columns: 6
+      tap_action:
+        action: perform-action
+        perform_action: button.press
+        target:
+          entity_id: button.main_boiler_supply_heatcore_reset_autotune
+        confirmation:
+          text: Discard all learned plant models and revert to the configured PID gains?
+    - type: markdown
+      grid_options:
+        columns: full
+      content: 'Power min/max, PID gains, change intervals and step sizes are integration options: **Settings → Devices &
+        services → Heatcore → Configure**.'
+  - type: grid
+    cards:
+    - type: heading
+      heading: Pool (Braiins)
+      icon: mdi:pool
+      badges:
+      - type: entity
+        entity: sensor.main_boiler_supply_heatcore_pool_worker_state
+        show_state: true
+        show_icon: true
+    - type: history-graph
+      title: Miner vs pool hashrate
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 6
+      entities:
+      - entity: sensor.heatcore_hashrate
+        name: Miner (local)
+        color: blue
+      - entity: sensor.main_boiler_supply_heatcore_pool_worker_hashrate_5m
+        name: Braiins 5m
+        color: purple
+      - entity: sensor.main_boiler_supply_heatcore_pool_worker_hashrate_24h
+        name: Braiins 24h avg
+        color: grey
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_worker_hashrate_5m
+      name: Pool hashrate 5m
+      color: blue
+      grid_options:
+        columns: 6
+      features:
+      - type: trend-graph
+        hours_to_show: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_worker_hashrate_24h
+      name: Pool hashrate 24h
+      color: blue
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_reward_today
+      name: Reward today
+      icon: mdi:bitcoin
+      color: orange
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_estimated_reward
+      name: Estimated reward
+      icon: mdi:bitcoin
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_balance
+      name: Balance
+      icon: mdi:wallet
+      color: orange
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_all_time_reward
+      name: All-time reward
+      icon: mdi:bitcoin
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_worker_last_share
+      name: Last share
+      icon: mdi:clock-check-outline
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_worker_shares_24h
+      name: Shares 24h
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_workers_online
+      name: Workers online
+      color: green
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pool_workers_offline
+      name: Workers offline
+      color: red
+      grid_options:
+        columns: 6
+    column_span: 3
+- title: Tuning
+  path: tuning
+  icon: mdi:tune-vertical
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Tracking and effort — 24h
+      icon: mdi:thermometer-lines
+    - type: history-graph
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 4
+      entities:
+      - entity: sensor.scout_21_temperature_probe
+        name: Supply (PV)
+      - entity: sensor.heatcore_pid_target_temperature
+        name: Target (SP)
+      - entity: sensor.heatcore_temperature
+        name: Miner temp
+    - type: history-graph
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 4
+      entities:
+      - entity: sensor.heatcore_power_consumption
+        name: Draw
+      - entity: sensor.heatcore_power_limit
+        name: Applied limit
+      - entity: sensor.heatcore_pid_requested_output
+        name: Requested
+    - type: history-graph
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 3
+      entities:
+      - entity: sensor.main_boiler_supply_heatcore_control_mode
+        name: Control mode
+      - entity: sensor.main_boiler_supply_heatcore_demand_shutoff_state
+        name: Shutoff state
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: PID terms — 6h
+      icon: mdi:chart-bell-curve
+    - type: history-graph
+      hours_to_show: 6
+      grid_options:
+        columns: full
+        rows: 4
+      entities:
+      - entity: sensor.heatcore_pid_error
+        name: Error
+      - entity: sensor.heatcore_pid_proportional
+        name: P
+      - entity: sensor.heatcore_pid_integral
+        name: I
+      - entity: sensor.heatcore_pid_derivative
+        name: D
+    - type: history-graph
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 4
+      entities:
+      - climate.den
+      - climate.great_room
+      - climate.back_bedroom
+      - climate.windowed_bedroom
+  - type: grid
+    cards:
+    - type: heading
+      heading: Controller inputs
+      icon: mdi:tune
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pid_demand_index
+      name: Demand index
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_outdoor_24h_mean
+      name: Outdoor 24h mean
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pid_pv_slope
+      name: Supply slope
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pid_external_compensation
+      name: Outdoor comp.
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pid_out_min_effective
+      name: Out min
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.main_boiler_supply_heatcore_pid_out_max_effective
+      name: Out max
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: binary_sensor.main_boiler_supply_heatcore_demand_shutoff
+      name: Shutoff (running)
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: binary_sensor.main_boiler_supply_heatcore_freeze_guard
+      name: Freeze guard
+      grid_options:
+        columns: 6
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Autotune
+      icon: mdi:tune-variant
+      badges:
+      - type: entity
+        entity: sensor.main_boiler_supply_heatcore_autotune_state
+        show_state: true
+    - type: markdown
+      grid_options:
+        columns: full
+      content: '{% set a = ''sensor.main_boiler_supply_heatcore_autotune_state'' %}{% set p = ''binary_sensor.heatcore_pid_safety_engaged''
+        %}{% set c = state_attr(a,''configured'') or {} %}**Mode:** {{ state_attr(a,''mode'') }} · **Runs:** {{ state_attr(a,''runs'')
+        }} · **Fits:** {{ state_attr(a,''fits'') }} · **Gains:** {{ state_attr(a,''gains_source'') }}
+
+
+        | | Kp | Ki | Kd |
+
+        |---|---|---|---|
+
+        | Configured | {{ c.kp }} | {{ c.ki }} | {{ c.kd }} |
+
+        | Effective | {{ state_attr(a,''effective_kp'') }} | {{ state_attr(a,''effective_ki'') }} | {{ state_attr(a,''effective_kd'')
+        }} |
+
+        | Suggested | {{ state_attr(a,''suggested_kp'') or ''—'' }} | {{ state_attr(a,''suggested_ki'') or ''—'' }} | {{ state_attr(a,''suggested_kd'')
+        or ''—'' }} |
+
+
+        **Suggested horizon:** {{ state_attr(a,''suggested_horizon_min'') or ''—'' }} min
+
+
+        **Plant models (by zones calling):**
+
+        {% for b, m in (state_attr(a,''models'') or {}).items() %}
+
+        - {{ b }} zone(s): K {{ m.k_f_per_kw }} °F/kW, τ {{ m.tau_min }} min, θ {{ m.theta_min }} min ({{ m.fits }} fit{{
+        ''s'' if m.fits != 1 }})
+
+        {% else %}
+
+        - none yet
+
+        {% endfor %}
+
+
+        {% set r = state_attr(a,''last_run'') %}{% if r %}**Last run:** {{ as_timestamp(r.start) | timestamp_custom(''%m-%d
+        %H:%M'') }} · {{ r.duration_min }} min · {{ r.zones_calling }} zone(s) · overshoot {{ r.peak_overshoot_f }}°F · to
+        band {{ r.time_to_band_min }} min · {{ r.commands }} cmds ({{ r.commands_per_hour }}/h) · ended {{ r.end_reason }}
+
+
+        {% endif %}{% set j = state_attr(a,''last_reject'') %}{% if j %}**Last rejected fit:** {{ j.reason }} ({{ j.end_reason
+        }}, {{ as_timestamp(j.t) | timestamp_custom(''%m-%d %H:%M'') }})
+
+
+        {% endif %}**Now:** soft start {{ ''on'' if state_attr(p,''soft_start'') else ''off'' }} · predictive {{ state_attr(p,''predictive'')
+        if state_attr(p,''predictive'') is not none else ''—'' }} · slope {{ state_attr(p,''supply_slope'') }} °F/min · projected
+        {{ state_attr(p,''supply_projected'') }}°F · floor {{ state_attr(p,''power_floor_effective'') }} W'
+    - type: history-graph
+      title: Autotune & control mode (48h)
+      hours_to_show: 48
+      grid_options:
+        columns: full
+      entities:
+      - entity: sensor.main_boiler_supply_heatcore_autotune_state
+      - entity: sensor.main_boiler_supply_heatcore_control_mode
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Supply — 7 day statistics
+      heading_style: subtitle
+      icon: mdi:chart-box
+    - type: statistics-graph
+      chart_type: line
+      period: hour
+      days_to_show: 7
+      stat_types:
+      - min
+      - mean
+      - max
+      entities:
+      - sensor.scout_21_temperature_probe
+      grid_options:
+        columns: full
+        rows: 4
+- title: Hardware
+  path: hardware
+  icon: mdi:chip
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Hash boards
+      icon: mdi:chip
+    - type: tile
+      entity: sensor.heatcore_board_0_board_temperature
+      name: B0 temp
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_board_0_board_hashrate
+      name: B0 TH/s
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_board_1_board_temperature
+      name: B1 temp
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_board_1_board_hashrate
+      name: B1 TH/s
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_board_2_board_temperature
+      name: B2 temp
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_board_2_board_hashrate
+      name: B2 TH/s
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_board_3_board_temperature
+      name: B3 temp
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_board_3_board_hashrate
+      name: B3 TH/s
+      grid_options:
+        columns: 6
+  - type: grid
+    cards:
+    - type: heading
+      heading: Miner
+      icon: mdi:pickaxe
+    - type: tile
+      entity: sensor.heatcore_temperature
+      name: Miner temp
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_expected_hashrate
+      name: Expected TH/s
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_efficiency
+      name: Efficiency
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_uptime
+      name: Uptime
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_accepted_shares
+      name: Accepted
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.heatcore_rejected_shares
+      name: Rejected
+      grid_options:
+        columns: 6
+  - type: grid
+    cards:
+    - type: heading
+      heading: Supply probe
+      icon: mdi:pipe
+    - type: tile
+      entity: binary_sensor.scout_21_online
+      name: Online
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.scout_21_rssi
+      name: Wi-Fi RSSI
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.scout_21_uptime
+      name: Uptime
+      grid_options:
+        columns: 6
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Mining performance — 24h
+      heading_style: subtitle
+      icon: mdi:chart-line
+    - type: history-graph
+      hours_to_show: 24
+      grid_options:
+        columns: full
+        rows: 4
+      entities:
+      - entity: sensor.heatcore_hashrate
+        name: Actual
+      - entity: sensor.heatcore_expected_hashrate
+        name: Expected

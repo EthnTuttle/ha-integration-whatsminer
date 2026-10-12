@@ -47,7 +47,9 @@
           "pid_target_temp": "PID Target Temperature (°F)",
           "pid_kp": "PID Kp (proportional, W/°F)",
           "pid_ki": "PID Ki (integral)",
-          "pid_kd": "PID Kd (derivative)"
+          "pid_kd": "PID Kd (derivative)",
+          "control_strategy": "Control strategy",
+          "daily_plan_hour": "Daily plan hour"
         },
         "data_description": {
           "password": "The API password for the miner",
@@ -58,7 +60,9 @@
           "pid_target_temp": "Target temperature for the PID controller (°F)",
           "pid_kp": "Proportional gain - controls response to current error",
           "pid_ki": "Integral gain - eliminates steady-state error",
-          "pid_kd": "Derivative gain - dampens overshoot"
+          "pid_kd": "Derivative gain - dampens overshoot",
+          "control_strategy": "pid (default): the PID moves the limit continuously. daily_observe: PID unchanged, a once-a-day power plan is computed and published for comparison only. daily: hold the daily plan (one command a day); the PID, soft start and predictive back-off are off, while the safety caps, lockout, freeze guard, demand shutoff, Mining Control and learned floor stay active.",
+          "daily_plan_hour": "Local hour (0-23) at which the daily plan is recomputed from the last 24 h and the forecast."
         }
       },
       "safety": {

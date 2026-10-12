@@ -31,12 +31,15 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from . import autotune as at
 from . import demand_shutoff as ds
 from .const import (
     CONF_CHIP_TEMP_SAFETY_CAP,
+    CONF_CONTROL_STRATEGY,
+    CONF_DAILY_PLAN_HOUR,
     CONF_EXTERNAL_TEMP_SENSOR,
     CONF_FREEZE_GUARD_FORECAST_HOURS,
     CONF_FREEZE_GUARD_SENSOR,
@@ -84,7 +87,10 @@ from .const import (
     CONF_PID_WEATHER_ENTITY,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
+    CONTROL_STRATEGIES,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
+    DEFAULT_CONTROL_STRATEGY,
+    DEFAULT_DAILY_PLAN_HOUR,
     DEFAULT_FREEZE_GUARD_FORECAST_HOURS,
     DEFAULT_FREEZE_GUARD_THRESHOLD,
     DEFAULT_PID_AUTOTUNE_MODE,
@@ -190,6 +196,27 @@ FLOOR_STABLE_S = 900.0
 FLOOR_SHORT_RUNS_TO_LEARN = 2
 FLOOR_RAISE_STEP = 250
 FLOOR_MAX_RAISE_W = 1500
+# Hardware faults are not floor evidence. A short run at a limit at or above
+# one proven holdable (a FLOOR_STABLE_S run) within FLOOR_PROVEN_TTL_S means
+# the miner held as much or less power recently: the restart is intermittent
+# or a hardware fault, and more power will not fix it. 2026-10-11: an M64 with
+# hashboard codes 561/563 restarted every 4-9 min at every limit from 1200 to
+# 3500 W, and learning read each pair of short runs as "unholdable", ratcheting
+# the floor 1200 -> 2700 W. Error codes alone can't tell the cases apart: the
+# genuinely too low 1000 W of 2026-10-07 also showed 560-563, and learning
+# fixed it (2200 W then held 89 min). Such restarts are counted as fault short
+# runs; FLOOR_SHORT_RUNS_TO_LEARN of them notify "hardware fault suspected"
+# once and never move the floor. Above the ceiling the restart-loop report
+# below already covers it. The proof's timestamp is refreshed at most every
+# FLOOR_PROVEN_REFRESH_S while a run keeps holding (each refresh is a store
+# write); a proof restored without one (pre-1.10) counts as stale.
+#
+# When learning would pass the ceiling, the episode has shown that more power
+# does not help: the floor reverts to what it was before the episode's first
+# raise, and a persisted hardware-fault flag keeps floor learning and floor
+# enforcement inert until a run hashes for FLOOR_STABLE_S (the episode end).
+FLOOR_PROVEN_TTL_S = 7 * 86400.0
+FLOOR_PROVEN_REFRESH_S = 3600.0
 # Re-send a floor enforcement command no sooner than this if the send failed.
 FLOOR_FIRE_RETRY_S = 60.0
 # Every safety cap (chip, supply, freeze-guard hold over the lockout) clamps
@@ -217,6 +244,40 @@ FORECAST_CACHE_S = 900.0
 FORECAST_STALE_MAX_S = 6 * 3600.0
 # Hourly outdoor sample spacing for the centred 24 h mean.
 OUTDOOR_SAMPLE_INTERVAL_S = 3600.0
+# Daily strategy (CONF_CONTROL_STRATEGY). Once a day at the plan hour (local),
+# and at startup without a valid plan, one power level is computed and held:
+#
+#   P_ff  = P_avg24 · (T_bal − T_fc24) / max(T_bal − T_out24, DAILY_MIN_SPAN_F)
+#   P_fb  = DAILY_KP_W_PER_F · (target − S_avg24)
+#   P_day = clamp(round(P_ff + P_fb, DAILY_ROUND_W), floor, power_max),
+#           moved at most DAILY_MAX_STEP_W from the previous plan
+#
+#   P_avg24  mean miner input power over the past 24 h (not mining = 0 W)
+#   T_out24  mean outdoor temperature over the past 24 h
+#   T_fc24   mean hourly forecast temperature over the next 24 h
+#   S_avg24  mean supply over the past 24 h while mining
+#   T_bal    DAILY_BALANCE_F, the outdoor temperature needing no heat
+#
+# Yesterday's power, scaled by how much colder or warmer tomorrow is forecast
+# relative to the house's balance point, is the feedforward; yesterday's mean
+# supply error trims it. Without outdoor or forecast data (fewer than
+# DAILY_MIN_HOURS of either) P_ff = P_avg24; without supply samples P_fb = 0.
+# Samples are hourly aggregates (persisted). With fewer than DAILY_MIN_HOURS
+# hours of power samples the plan is the limit in force (no change) and is
+# retried hourly. The supply tops out near 115-119°F with the dry cooler
+# holding the coolant at ~123°F, and heat over need goes to the garage, so a
+# plan a little high costs nothing but power, while every change costs a
+# btminer restart. A plan within DAILY_DEADBAND_W of the limit in force is not
+# sent.
+DAILY_BALANCE_F = 65.0
+DAILY_MIN_SPAN_F = 5.0
+DAILY_KP_W_PER_F = 60.0
+DAILY_MAX_STEP_W = 750
+DAILY_DEADBAND_W = 100
+DAILY_ROUND_W = 50
+DAILY_MIN_HOURS = 12
+DAILY_WINDOW_S = 24 * 3600.0
+DAILY_RETRY_S = 3600.0
 
 STORE_VERSION = 1
 
@@ -331,6 +392,13 @@ class WhatsminerController:
         self._freeze_unknown_logged = False
         self._freeze_hold_over_lockout = False
         self._freeze_off_notified = False
+        # Control strategy (see DAILY_BALANCE_F)
+        strategy = str(g(CONF_CONTROL_STRATEGY, DEFAULT_CONTROL_STRATEGY))
+        self._strategy = strategy if strategy in CONTROL_STRATEGIES else DEFAULT_CONTROL_STRATEGY
+        try:
+            self._daily_plan_hour = int(g(CONF_DAILY_PLAN_HOUR, DEFAULT_DAILY_PLAN_HOUR)) % 24
+        except (TypeError, ValueError):
+            self._daily_plan_hour = DEFAULT_DAILY_PLAN_HOUR
 
         # --- runtime state ---------------------------------------------------
         self._shutoff = ds.ShutoffState()
@@ -391,11 +459,25 @@ class WhatsminerController:
         self._floor_learned_at: float | None = None
         self._floor_learn_limit: int | None = None
         self._floor_proven_ok: int | None = None
+        self._floor_proven_ok_at: float | None = None
         self._floor_exhausted = False
+        # Hardware-fault handling (see FLOOR_PROVEN_TTL_S). The episode base is
+        # (learned, learned_at, learn_limit) before the episode's first raise.
+        self._fault_short_runs = 0
+        self._fault_notified = False
+        self._hw_fault = False
+        self._floor_episode_base: tuple[int | None, float | None, int | None] | None = None
         self._restart_loop_notified = False
         self._floor_chip_notified = False
         self._last_floor_fire_at: float = 0.0
         self._supply_hot_at: float | None = None
+        # Daily plan: hourly aggregates {"t": hour start, "n"/"p": power
+        # samples/sum, "ns"/"s": supply while mining, "no"/"o": outdoor}, and
+        # the plan in force (power_w, computed_at, next_at, diagnostics).
+        self._daily_buckets: list[dict[str, float]] = []
+        self._daily_plan: dict[str, Any] | None = None
+        self._daily_applied_at: float | None = None  # computed_at of the plan acted on
+        self._daily_pending = False
         self._pid = PID(
             kp=self._kp,
             ki=float(g(CONF_PID_KI, DEFAULT_PID_KI)),
@@ -429,6 +511,7 @@ class WhatsminerController:
         self._publish_freeze(None, None, None)
         self._publish_floor()
         self._publish_autotune()
+        self._publish_daily()
         self._pid_state["control_mode"] = "idle"
 
     # ------------------------------------------------------------------ setup
@@ -481,8 +564,25 @@ class WhatsminerController:
                 self._floor_learn_limit = int(learn_limit) if learn_limit is not None else None
             if data.get("floor_proven_ok") is not None:
                 self._floor_proven_ok = int(data["floor_proven_ok"])
+                proven_at = data.get("floor_proven_ok_at")
+                self._floor_proven_ok_at = float(proven_at) if proven_at is not None else None
+            base = data.get("floor_episode_base")
+            if isinstance(base, (list, tuple)) and len(base) == 3:
+                b_learned, b_at, b_limit = base
+                self._floor_episode_base = (
+                    int(b_learned) if b_learned is not None else None,
+                    float(b_at) if b_at is not None else None,
+                    int(b_limit) if b_limit is not None else None,
+                )
         except (TypeError, ValueError):
             self._floor_learned = self._floor_learned_at = self._floor_learn_limit = None
+            self._floor_proven_ok_at = self._floor_episode_base = None
+        self._hw_fault = bool(data.get("floor_hw_fault", False))
+        if self._hw_fault:
+            _LOGGER.warning(
+                "Hardware fault flag still set from before restart — floor learning and floor "
+                "enforcement stay off until a run hashes for %d min", FLOOR_STABLE_S // 60,
+            )
         if self._floor_learned is not None:
             _LOGGER.warning(
                 "Learned power floor %dW in effect (Power Min %dW) — the miner could not hold "
@@ -490,6 +590,7 @@ class WhatsminerController:
                 self._floor(), self._power_min, self._floor_learn_limit,
             )
         self._publish_floor()
+        self._restore_daily(data, now)
         self._publish_shutoff(ds.Decision(ds.NONE, "restored", (), self._shutoff))
         await self._restore_autotune()
         self._unsub_coordinator = self.coordinator.async_add_listener(
@@ -553,6 +654,13 @@ class WhatsminerController:
             "floor_learned_at": self._floor_learned_at,
             "floor_learn_limit": self._floor_learn_limit,
             "floor_proven_ok": self._floor_proven_ok,
+            "floor_proven_ok_at": self._floor_proven_ok_at,
+            "floor_hw_fault": self._hw_fault,
+            "floor_episode_base": (
+                list(self._floor_episode_base) if self._floor_episode_base is not None else None
+            ),
+            "daily_buckets": [dict(b) for b in self._daily_buckets],
+            "daily_plan": dict(self._daily_plan) if self._daily_plan is not None else None,
         }
 
     async def _save(self) -> None:
@@ -639,14 +747,21 @@ class WhatsminerController:
             self._floor_learned_at = None
             self._floor_learn_limit = None
             self._floor_proven_ok = None
+            self._floor_proven_ok_at = None
             self._floor_short_runs = 0
             self._hot_short_runs = 0
+            self._fault_short_runs = 0
             self._floor_short_run_limit = None
             self._floor_exhausted = False
             self._restart_loop_notified = False
             self._floor_chip_notified = False
+            self._fault_notified = False
+            self._hw_fault = False
+            self._floor_episode_base = None
             await self._save()
-        for key in ("floor_raised", "floor_ceiling", "restart_loop", "restart_loop_chip_cap"):
+        for key in (
+            "floor_raised", "floor_ceiling", "restart_loop", "restart_loop_chip_cap", "hardware_fault",
+        ):
             persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{key}")
         _LOGGER.warning(
             "Learned power floor reset (was %s) — the effective minimum is Power Min %dW again",
@@ -729,7 +844,11 @@ class WhatsminerController:
                 # the first start of an episode however fast the miner loops.
                 seeded = self._seed_bumpless_transfer()
                 ours = self._claim_start(now)
-                if ours or (self._floor_short_runs == 0 and self._hot_short_runs == 0):
+                if ours or (
+                    self._floor_short_runs == 0
+                    and self._hot_short_runs == 0
+                    and self._fault_short_runs == 0
+                ):
                     self._resume_hold_until = max(self._resume_hold_until, now + RESUME_BOOT_HOLD_S)
                 if self._recently_sent_limit() is None:
                     # Not the restart our own limit change causes (that one
@@ -774,6 +893,10 @@ class WhatsminerController:
         forecast = await self._hourly_forecast(now)
         freeze = self._update_freeze(now, forecast)
         gate_mean = self._update_outdoor_mean(now, forecast)
+        if fresh:
+            self._sample_daily(now, temp, is_mining)
+        if self._daily_due(now):
+            self._compute_daily_plan(now, forecast)
         summary, calling, unknown, demand_index = self._demand_snapshot(now)
         self._pid_state["demand_index"] = demand_index
         # Fed to the autotuner after this step has decided (_feed_autotune).
@@ -824,6 +947,10 @@ class WhatsminerController:
         # UNLATCH clears the latch inside _apply_decision; re-read it.
         latched = bool(self._pid_state.get("lockout_latched"))
 
+        if latched or not is_mining or (state.state in (ds.STOPPED, ds.RESUMING) and not state.simulated):
+            # Daily strategy: whatever stopped the miner, go back to the plan
+            # (one command) once it hashes again.
+            self._daily_pending = True
         if latched:
             self._pid_state["safety_engaged"] = True
             self._pid_state["control_mode"] = "latched"
@@ -869,6 +996,9 @@ class WhatsminerController:
         if self._freeze_hold_over_lockout:
             caps = caps | {"lockout"}
         self._supply_hot(now, temp)
+        if self._strategy == "daily":
+            await self._run_daily_step(temp, caps, now)
+            return
         await self._run_pid_step(temp, caps, summary, state)
 
     async def _enforce_floor_while_booting(self, temp: float | None, now: float) -> None:
@@ -1595,10 +1725,10 @@ class WhatsminerController:
         miner below a floor it has proven it cannot hold is about to restart
         anyway, so the restart our command causes costs nothing. Inert while
         any safety cap holds the miner at power_min, once learning is
-        exhausted, and when no floor has been learned (a limit merely below
+        exhausted or a hardware fault is flagged, and when no floor has been learned (a limit merely below
         the configured power_min waits for the normal gates).
         """
-        if self._floor_learned is None or self._floor_exhausted or caps:
+        if self._floor_learned is None or self._floor_exhausted or self._hw_fault or caps:
             return False
         if believed is None or believed >= self._floor():
             return False
@@ -1659,22 +1789,48 @@ class WhatsminerController:
             self._run_limit = limit
         if is_mining and hashed_for >= FLOOR_STABLE_S and self._run_limit:
             # This run held its limit: the episode (if any) is over.
-            changed = self._floor_short_runs or self._floor_exhausted or self._restart_loop_notified
+            changed = bool(
+                self._floor_short_runs or self._floor_exhausted or self._restart_loop_notified
+                or self._hw_fault or self._floor_episode_base is not None
+            )
+            if self._hw_fault:
+                _LOGGER.info(
+                    "Miner held %dW for %.0f min — clearing the hardware-fault flag; floor "
+                    "learning and enforcement resume", self._run_limit, hashed_for / 60,
+                )
             self._floor_short_runs = 0
             self._hot_short_runs = 0
+            self._fault_short_runs = 0
             self._floor_short_run_limit = None
             self._floor_exhausted = False
             self._restart_loop_notified = False
             self._floor_chip_notified = False
+            self._fault_notified = False
+            self._hw_fault = False
+            self._floor_episode_base = None
             # A limit we sent during this run has not been held for a second
             # yet (its restart is still to come): credit only a limit in force
             # since the run began.
-            if sent is None and (self._floor_proven_ok is None or self._run_limit < self._floor_proven_ok):
-                self._floor_proven_ok = self._run_limit
-                changed = True
+            if sent is None:
+                proven, proven_at = self._floor_proven_ok, self._floor_proven_ok_at
+                if proven is None or not self._proven_recent(now) or self._run_limit < proven:
+                    self._floor_proven_ok = self._run_limit
+                    self._floor_proven_ok_at = now
+                    changed = True
+                elif (
+                    self._run_limit == proven
+                    and (proven_at is None or now - proven_at >= FLOOR_PROVEN_REFRESH_S)
+                ):
+                    self._floor_proven_ok_at = now  # still holding it: keep the proof fresh
+                    changed = True
             if changed:
                 self._save_later()
         self._publish_floor()
+
+    def _proven_recent(self, now: float) -> bool:
+        """True when proven_ok was demonstrated within FLOOR_PROVEN_TTL_S (legacy: stale)."""
+        at = self._floor_proven_ok_at
+        return self._floor_proven_ok is not None and at is not None and now - at < FLOOR_PROVEN_TTL_S
 
     def _count_restart(self, regression: _Regression, now: float) -> None:
         """A confirmed Elapsed regression: attribute it, and count it if it ended a short run."""
@@ -1691,6 +1847,28 @@ class WhatsminerController:
                 "not counted toward the learned floor", regression.run_s, limit,
             )
             return
+        proven = self._floor_proven_ok if self._proven_recent(now) else None
+        if self._hw_fault or (proven is not None and limit >= proven):
+            # The miner recently held a limit at or below this one, so this is
+            # not a power floor: a hashboard dropping out restarts btminer at
+            # any limit. Never floor evidence. Above the ceiling the restart
+            # loop path below still reports it.
+            self._fault_short_runs += 1
+            _LOGGER.warning(
+                "Miner restarted on its own after hashing %.0fs at %dW, but it held %s within "
+                "the last %d days — hardware fault suspected, not counted toward the learned "
+                "floor (%d such restart%s)",
+                regression.run_s, limit,
+                f"{proven}W" if proven is not None else "a limit",
+                int(FLOOR_PROVEN_TTL_S // 86400), self._fault_short_runs,
+                "" if self._fault_short_runs == 1 else "s",
+            )
+            if limit <= self._floor_ceiling() or self._hw_fault:
+                self._floor_short_runs = 0
+                self._floor_short_run_limit = None
+                self._notify_hardware_fault(limit, proven)
+                self._publish_floor()
+                return
         if (
             self._floor_short_run_limit is not None
             and abs(limit - self._floor_short_run_limit) > FLOOR_RAISE_STEP
@@ -1708,6 +1886,30 @@ class WhatsminerController:
             "" if self._floor_short_runs == 1 else "s",
         )
         self._consider_floor_raise(limit, now)
+
+    def _notify_hardware_fault(self, limit: int, proven: int | None) -> None:
+        """Once per episode, after FLOOR_SHORT_RUNS_TO_LEARN fault restarts."""
+        if self._fault_notified or self._hw_fault:
+            return
+        if self._fault_short_runs < FLOOR_SHORT_RUNS_TO_LEARN:
+            return
+        self._fault_notified = True
+        held = (
+            f"it held {proven} W for {FLOOR_STABLE_S / 60:.0f} min or more on "
+            f"{_iso(self._floor_proven_ok_at)}"
+            if proven is not None else "it has held lower limits"
+        )
+        self._notify(
+            "hardware_fault",
+            "Miner hardware fault suspected",
+            f"The miner restarted {self._fault_short_runs} times without a command from the "
+            f"controller, most recently at {limit} W, yet {held}. Restarts at limits the miner "
+            "has already held are not a power-floor problem, so the controller is not raising "
+            "its floor. The integration cannot read the miner's error codes: check the miner "
+            "web UI (or the dashboard's hashboard status) for errors 560-563 (slot "
+            "power/hashrate imbalance). The usual fix is to reseat the hashboard adapter/ribbon "
+            "and re-torque the busbar.",
+        )
 
     def _consider_floor_raise(self, limit: int, now: float) -> None:
         if FLOOR_RAISE_STEP <= 0:
@@ -1757,29 +1959,47 @@ class WhatsminerController:
             return  # already enforcing a higher floor; the command is pending/retrying
         if new > ceiling:
             if not self._floor_exhausted:
+                # Restarting at every limit from the episode's start up to the
+                # ceiling: that is a hardware fault, not a floor. Undo this
+                # episode's raises and stop learning (and enforcing) until a run
+                # holds FLOOR_STABLE_S.
                 self._floor_exhausted = True
+                self._hw_fault = True
+                base = self._floor_episode_base
+                if base is not None:
+                    self._floor_learned, self._floor_learned_at, self._floor_learn_limit = base
+                self._floor_episode_base = None
+                reverted = self._floor()
                 _LOGGER.critical(
                     "Miner cannot hold %dW and the floor may not exceed %dW (%d restarts) — "
-                    "not raising it further; the miner needs service",
-                    limit, ceiling, self._floor_short_runs,
+                    "restarts at every limit: hardware fault, not a power floor. Floor reverted "
+                    "to %dW; learning and enforcement suspended until a run holds %d min",
+                    limit, ceiling, self._floor_short_runs, reverted, FLOOR_STABLE_S // 60,
                 )
+                persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_floor_raised")
                 self._notify(
                     "floor_ceiling",
-                    f"Miner cannot hold any limit up to {ceiling} W",
-                    f"The miner keeps restarting at {limit} W. Raising the power floor further "
-                    f"would take it past {ceiling} W (Power Min {self._power_min} W + "
-                    f"{FLOOR_MAX_RAISE_W} W), so the controller has stopped raising it. On the "
-                    "M64 this pattern goes with hashboard errors 560-563 (slot power/hashrate "
-                    "imbalance: reseat the adapter/ribbon, re-torque the busbar). Turn Mining "
-                    "Control off if you want it stopped.",
+                    "Miner restarts at every limit — hardware fault",
+                    f"The miner keeps restarting at every limit up to {limit} W (the power floor "
+                    f"may not exceed {ceiling} W). Restarts at every limit are not a power-floor "
+                    f"problem, so the floor was reverted to {reverted} W and learning is "
+                    "suspended until a run hashes for "
+                    f"{FLOOR_STABLE_S / 60:.0f} min. Service the hashboards: on the M64 this "
+                    "pattern goes with hashboard errors 560-563 (slot power/hashrate imbalance: "
+                    "reseat the adapter/ribbon, re-torque the busbar); check the miner web UI or "
+                    "the dashboard. Turn Mining Control off if you want it stopped.",
                 )
+                self._publish_floor()
+                self._save_later()
             return
+        if self._floor_episode_base is None:
+            self._floor_episode_base = (
+                self._floor_learned, self._floor_learned_at, self._floor_learn_limit,
+            )
         self._floor_learned = new
         self._floor_learned_at = now
         self._floor_learn_limit = limit
         self._floor_exhausted = False
-        if self._floor_proven_ok is not None and self._floor_proven_ok <= limit:
-            self._floor_proven_ok = None  # the hardware floor has moved
         _LOGGER.warning(
             "Miner restarted %d times in a row at %dW without a command — raising the effective "
             "floor to %dW (Power Min %dW)", self._floor_short_runs, limit, new, self._power_min,
@@ -1806,9 +2026,167 @@ class WhatsminerController:
             "learned_at": _iso(self._floor_learned_at),
             "unholdable_limit": self._floor_learn_limit,
             "proven_ok": self._floor_proven_ok,
+            "proven_ok_at": _iso(self._floor_proven_ok_at),
             "short_runs": self._floor_short_runs,
+            "fault_short_runs": self._fault_short_runs,
+            "hardware_fault_suspected": (
+                self._hw_fault or self._fault_short_runs >= FLOOR_SHORT_RUNS_TO_LEARN
+            ),
+            "learning_suspended": self._hw_fault,
             "exhausted": self._floor_exhausted,
             "run_uptime_s": self._last_uptime,
+        }
+
+    # ---------------------------------------------------------- daily plan
+
+    def _restore_daily(self, data: dict[str, Any], now: float) -> None:
+        buckets = data.get("daily_buckets")
+        if isinstance(buckets, list):
+            keep: list[dict[str, float]] = []
+            for b in buckets:
+                try:
+                    bucket = {k: float(b[k]) for k in ("t", "n", "p", "ns", "s", "no", "o")}
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if now - bucket["t"] < DAILY_WINDOW_S + 3600:
+                    keep.append(bucket)
+            self._daily_buckets = sorted(keep, key=lambda b: b["t"])
+        plan = data.get("daily_plan")
+        if isinstance(plan, dict) and plan.get("next_at") is not None:
+            try:
+                plan["next_at"] = float(plan["next_at"])
+                plan["computed_at"] = float(plan["computed_at"])
+                plan["power_w"] = int(plan["power_w"]) if plan.get("power_w") is not None else None
+            except (KeyError, TypeError, ValueError):
+                plan = None
+            self._daily_plan = plan
+        self._publish_daily()
+
+    def _sample_daily(self, now: float, temp: float | None, is_mining: bool) -> None:
+        """Fold one fresh poll into the hourly aggregates behind the daily plan."""
+        hour = now - now % 3600
+        if not self._daily_buckets or self._daily_buckets[-1]["t"] != hour:
+            self._daily_buckets.append({"t": hour, "n": 0, "p": 0.0, "ns": 0, "s": 0.0, "no": 0, "o": 0.0})
+            cutoff = now - DAILY_WINDOW_S - 3600
+            self._daily_buckets = [b for b in self._daily_buckets if b["t"] > cutoff]
+            self._save_later()  # once an hour, so the 60 s delayed save is never starved
+        bucket = self._daily_buckets[-1]
+        power = 0.0
+        if is_mining:
+            data = self.coordinator.data
+            try:
+                power = float(data.get("wattage") or data.get("wattage_limit") or 0)
+            except (TypeError, ValueError):
+                power = 0.0
+            if temp is not None:
+                bucket["ns"] += 1
+                bucket["s"] += float(temp)
+        bucket["n"] += 1
+        bucket["p"] += power
+        outdoor = self._read_outdoor_fahrenheit()
+        if outdoor is not None:
+            bucket["no"] += 1
+            bucket["o"] += float(outdoor)
+
+    def _next_plan_at(self, now: float) -> float:
+        """The next occurrence of the plan hour, local time (DST-aware)."""
+        local = dt_util.as_local(dt_util.utc_from_timestamp(now))
+        nxt = local.replace(hour=self._daily_plan_hour, minute=0, second=0, microsecond=0)
+        if nxt.timestamp() <= now:
+            nxt = (nxt + timedelta(days=1)).replace(hour=self._daily_plan_hour)
+        return nxt.timestamp()
+
+    def _daily_due(self, now: float) -> bool:
+        plan = self._daily_plan
+        return (
+            self._strategy != "pid"
+            and (plan is None or plan.get("power_w") is None or now >= float(plan.get("next_at") or 0))
+        )
+
+    def _compute_daily_plan(self, now: float, forecast: list[tuple[float, float]]) -> None:
+        window = [b for b in self._daily_buckets if now - b["t"] < DAILY_WINDOW_S]
+        samples_h = sum(1 for b in window if b["n"] > 0)
+        prev_plan = self._daily_plan or {}
+        reference = self._reference(int(self.coordinator.data.get("wattage_limit") or 0))
+        prev = prev_plan.get("power_w")
+        if prev is None:
+            prev = reference
+        floor, top = self._floor(), self._power_max
+
+        def mean(n_key: str, s_key: str, min_hours: int) -> float | None:
+            hours = [b for b in window if b[n_key] > 0]
+            if len(hours) < min_hours:
+                return None
+            return sum(b[s_key] / b[n_key] for b in hours) / len(hours)
+
+        p_avg = mean("n", "p", DAILY_MIN_HOURS)
+        t_out = mean("no", "o", DAILY_MIN_HOURS)
+        ahead = [v for ts, v in forecast if now < ts <= now + DAILY_WINDOW_S]
+        t_fc = sum(ahead) / len(ahead) if len(ahead) >= DAILY_MIN_HOURS else None
+        supply = mean("ns", "s", 1)
+        target = self._target()
+        p_ff = p_fb = None
+        if p_avg is None:
+            power = prev
+            reason = f"only {samples_h} h of samples (need {DAILY_MIN_HOURS}) — holding the current limit"
+            next_at = min(self._next_plan_at(now), now + DAILY_RETRY_S)
+        else:
+            if t_out is not None and t_fc is not None:
+                p_ff = p_avg * (DAILY_BALANCE_F - t_fc) / max(DAILY_BALANCE_F - t_out, DAILY_MIN_SPAN_F)
+                reason = f"forecast {t_fc:.1f}°F vs last 24 h {t_out:.1f}°F"
+            else:
+                p_ff = p_avg
+                reason = "no outdoor/forecast data — feedforward is the 24 h mean power"
+            p_fb = DAILY_KP_W_PER_F * (target - supply) if supply is not None else 0.0
+            if supply is not None:
+                reason += f"; supply mean {supply:.1f}°F vs target {target:.1f}°F"
+            raw = p_ff + p_fb
+            power = int(round(raw / DAILY_ROUND_W) * DAILY_ROUND_W)
+            power = max(floor, min(top, power))
+            if prev is not None:
+                stepped = max(prev - DAILY_MAX_STEP_W, min(prev + DAILY_MAX_STEP_W, power))
+                if stepped != power:
+                    reason += f"; step-limited to ±{DAILY_MAX_STEP_W} W from {prev} W"
+                power = max(floor, min(top, stepped))
+            next_at = self._next_plan_at(now)
+        self._daily_plan = {
+            "power_w": None if power is None else int(power),
+            "computed_at": now,
+            "next_at": next_at,
+            "p_avg24": None if p_avg is None else round(p_avg, 1),
+            "t_out24": None if t_out is None else round(t_out, 2),
+            "t_fc24": None if t_fc is None else round(t_fc, 2),
+            "supply_mean24": None if supply is None else round(supply, 2),
+            "p_ff": None if p_ff is None else round(p_ff, 1),
+            "p_fb": None if p_fb is None else round(p_fb, 1),
+            "samples_h": samples_h,
+            "reason": reason,
+        }
+        _LOGGER.info(
+            "Daily plan (%s): %sW — P_avg24=%s T_out24=%s T_fc24=%s supply24=%s P_ff=%s P_fb=%s "
+            "(%d h of samples; %s); next plan %s",
+            self._strategy, power, self._daily_plan["p_avg24"], self._daily_plan["t_out24"],
+            self._daily_plan["t_fc24"], self._daily_plan["supply_mean24"], self._daily_plan["p_ff"],
+            self._daily_plan["p_fb"], samples_h, reason, _iso(next_at),
+        )
+        self._publish_daily()
+        self._save_later()
+
+    def _publish_daily(self) -> None:
+        plan = self._daily_plan or {}
+        self._pid_state["daily_plan"] = {
+            "strategy": self._strategy,
+            "power_w": plan.get("power_w"),
+            "computed_at": _iso(plan.get("computed_at")),
+            "next_at": _iso(plan.get("next_at")) if self._strategy != "pid" else None,
+            "p_avg24": plan.get("p_avg24"),
+            "t_out24": plan.get("t_out24"),
+            "t_fc24": plan.get("t_fc24"),
+            "supply_mean24": plan.get("supply_mean24"),
+            "p_ff": plan.get("p_ff"),
+            "p_fb": plan.get("p_fb"),
+            "samples_h": plan.get("samples_h"),
+            "reason": plan.get("reason") if self._strategy != "pid" else "strategy is pid",
         }
 
     # -------------------------------------------------------------- autotune
@@ -1935,6 +2313,8 @@ class WhatsminerController:
         return 60.0 * sum((t - mean_t) * (v - mean_v) for t, v in samples) / var
 
     def _arm_soft_start(self, why: str) -> None:
+        if self._strategy == "daily":
+            return  # the plan is the setpoint; no ramp toward it
         if not self._soft_start:
             _LOGGER.info("Soft start armed (%s) — increases stepped until the supply nears target", why)
         self._soft_start = True
@@ -2234,6 +2614,75 @@ class WhatsminerController:
         _LOGGER.info(
             "PID: temp=%.1f°F target=%.1f°F → power %dW (was %dW, err=%.2f)",
             temp, target, new_power, reference, self._pid.error,
+        )
+        await self._set_power_limit(new_power, floor_fire)
+
+    async def _run_daily_step(self, temp: float | None, caps: frozenset[str], now: float) -> None:
+        """Strategy "daily": hold the plan; only the safety layers move the limit.
+
+        One command per plan (skipped inside DAILY_DEADBAND_W of the limit in
+        force) and one to return to the plan when a cap releases. Caps clamp
+        exactly as under the PID; floor enforcement bypasses the gates.
+        """
+        floor = self._floor()
+        current_limit = self.coordinator.data.get("wattage_limit") or 0
+        reference = self._reference(current_limit)
+        plan = self._daily_plan or {}
+        planned = plan.get("power_w")
+        if planned is None:
+            planned = reference if reference is not None else floor
+        planned = max(floor, min(self._power_max, int(planned)))
+        self._null_pid_internals()
+        self._soft_start = False
+        if caps:
+            new_power, mode = self._cap_clamp(caps), "safety_cap"
+            self._daily_pending = True  # return to the plan when the cap releases
+        else:
+            new_power, mode = planned, "daily"
+            if plan.get("computed_at") != self._daily_applied_at:
+                self._daily_pending = True
+        self._pid_state.update(
+            {
+                "output": new_power,
+                "requested_output": planned,
+                "safety_engaged": bool(caps),
+                "out_min_effective": floor,
+                "out_max_effective": self._power_max,
+                "soft_start": False,
+                "control_mode": mode,
+            }
+        )
+        floor_fire = self._floor_fire(reference, now, caps)
+        if floor_fire:
+            new_power = max(floor, new_power)
+        if caps:
+            if reference is not None and new_power == reference:
+                return
+        elif not floor_fire:
+            if not self._daily_pending:
+                return
+            if reference is not None and abs(new_power - reference) <= DAILY_DEADBAND_W:
+                _LOGGER.debug(
+                    "Daily plan %dW is within %dW of the limit in force %dW — no command",
+                    new_power, DAILY_DEADBAND_W, reference,
+                )
+                self._daily_pending = False
+                self._daily_applied_at = plan.get("computed_at")
+                return
+            interval = (
+                self._min_adjust_interval_increase
+                if reference is None or new_power > reference
+                else self._min_adjust_interval
+            )
+            if now < self._resume_hold_until or now - self._last_command_time < interval:
+                self._pid_state["output"] = self._last_commanded_power
+                return
+            self._daily_pending = False
+            self._daily_applied_at = plan.get("computed_at")
+        _LOGGER.info(
+            "Daily: %s → power %dW (was %s, plan %dW)",
+            "safety cap" if caps else ("floor enforcement" if floor_fire else "plan"),
+            new_power, f"{reference}W" if reference is not None else "unknown", planned,
         )
         await self._set_power_limit(new_power, floor_fire)
 

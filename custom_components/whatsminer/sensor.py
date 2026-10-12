@@ -721,6 +721,7 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
         shutoff = self._pid_state.get("demand_shutoff") or {}
         freeze = self._pid_state.get("freeze_guard") or {}
         floor = self._pid_state.get("power_floor") or {}
+        daily = self._pid_state.get("daily_plan") or {}
         return {
             "supply_lockout_latched": bool(self._pid_state.get("lockout_latched")),
             "safety_engaged": bool(self._pid_state.get("safety_engaged")),
@@ -745,7 +746,16 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
             "power_floor_learned": floor.get("learned"),
             "power_floor_unholdable_limit": floor.get("unholdable_limit"),
             "power_floor_proven_ok": floor.get("proven_ok"),
+            "power_floor_proven_ok_at": floor.get("proven_ok_at"),
             "restart_short_runs": floor.get("short_runs"),
+            "hardware_fault_suspected": floor.get("hardware_fault_suspected"),
+            "fault_short_runs": floor.get("fault_short_runs"),
+            "floor_learning_suspended": floor.get("learning_suspended"),
+            "control_strategy": daily.get("strategy"),
+            "daily_plan_power": daily.get("power_w"),
+            "daily_plan_computed_at": daily.get("computed_at"),
+            "daily_plan_next_at": daily.get("next_at"),
+            "daily_plan_reason": daily.get("reason"),
             "pid_kp": self._pid_state.get("pid_kp"),
             "pid_ki": self._pid_state.get("pid_ki"),
             "pid_kd": self._pid_state.get("pid_kd"),

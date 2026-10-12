@@ -129,6 +129,15 @@ def install() -> None:
     util = _mod("homeassistant.util")
     util.__path__ = []
     conv = _mod("homeassistant.util.unit_conversion")
+    dt_mod = _mod("homeassistant.util.dt")
+    util.dt = dt_mod
+    import datetime as _dt
+
+    # Tests run in UTC so local plan hours are deterministic.
+    dt_mod.DEFAULT_TIME_ZONE = _dt.timezone.utc
+    dt_mod.as_local = lambda value: value.astimezone(dt_mod.DEFAULT_TIME_ZONE)
+    dt_mod.utc_from_timestamp = lambda ts: _dt.datetime.fromtimestamp(ts, _dt.timezone.utc)
+    dt_mod.now = lambda: _dt.datetime.now(dt_mod.DEFAULT_TIME_ZONE)
 
     class TemperatureConverter:
         @staticmethod

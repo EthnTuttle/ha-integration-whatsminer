@@ -30,6 +30,8 @@ from .const import (
     CONF_FREEZE_GUARD_FORECAST_HOURS,
     CONF_FREEZE_GUARD_SENSOR,
     CONF_FREEZE_GUARD_THRESHOLD,
+    CONF_CONTROL_STRATEGY,
+    CONF_DAILY_PLAN_HOUR,
     CONF_PID_AUTOTUNE_MODE,
     CONF_PID_INTEGRAL_BAND,
     CONF_PID_KD,
@@ -83,6 +85,8 @@ from .const import (
     DEFAULT_PID_KE,
     DEFAULT_PID_KI,
     DEFAULT_PID_KP,
+    DEFAULT_CONTROL_STRATEGY,
+    DEFAULT_DAILY_PLAN_HOUR,
     DEFAULT_PID_AUTOTUNE_MODE,
     DEFAULT_PID_COARSE_STEP_BAND,
     DEFAULT_PID_DEMAND_ENTITIES,
@@ -117,6 +121,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SUPER_PASSWORD,
     AUTOTUNE_MODES,
+    CONTROL_STRATEGIES,
     DEMAND_SHUTOFF_MODES,
     DOMAIN,
 )
@@ -303,6 +308,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_PID_KD,
                         default=self._current_data.get(CONF_PID_KD, DEFAULT_PID_KD),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0, max=5000)),
+                    vol.Optional(
+                        CONF_CONTROL_STRATEGY,
+                        default=self._current_data.get(
+                            CONF_CONTROL_STRATEGY, DEFAULT_CONTROL_STRATEGY
+                        ),
+                    ): vol.In(CONTROL_STRATEGIES),
+                    vol.Optional(
+                        CONF_DAILY_PLAN_HOUR,
+                        default=self._current_data.get(
+                            CONF_DAILY_PLAN_HOUR, DEFAULT_DAILY_PLAN_HOUR
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
                 }
             ),
         )

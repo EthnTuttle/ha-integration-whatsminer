@@ -60,6 +60,9 @@ CONF_PID_FALLBACK_OUTDOOR_WARM = "pid_fallback_outdoor_warm"
 # Demand shutoff (power the miner off when every thermostat is idle)
 CONF_PID_DEMAND_SHUTOFF_MODE = "pid_demand_shutoff_mode"
 CONF_PID_AUTOTUNE_MODE = "pid_autotune_mode"
+# Control strategy (1.10.0) and the local hour the daily plan is made
+CONF_CONTROL_STRATEGY = "control_strategy"
+CONF_DAILY_PLAN_HOUR = "daily_plan_hour"
 CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = "pid_demand_shutoff_outdoor_min"
 CONF_PID_DEMAND_SHUTOFF_HYSTERESIS = "pid_demand_shutoff_hysteresis"
 CONF_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = "pid_demand_shutoff_idle_dwell_min"
@@ -188,6 +191,19 @@ DEFAULT_PID_DEMAND_SHUTOFF_MODE = "off"
 # small, rate-limited kp/ki moves as an overlay on the configured gains).
 AUTOTUNE_MODES = ["off", "observe", "active"]
 DEFAULT_PID_AUTOTUNE_MODE = "observe"
+# Control strategy (1.10.0). Every limit change restarts btminer (minutes of
+# zero or low hashrate), and the PID with its soft start and predictive
+# back-off changed the limit ~40 times a day.
+#   pid: the closed loop, as before.
+#   daily_observe: the PID as before; the daily plan is computed and
+#     published only.
+#   daily: one power level per day from the plan, held until the next plan;
+#     no PID, soft-start or predictive changes. Safety caps, the supply
+#     lockout, the freeze guard, the demand shutoff, Mining Control and floor
+#     enforcement keep their authority.
+CONTROL_STRATEGIES = ["pid", "daily_observe", "daily"]
+DEFAULT_CONTROL_STRATEGY = "pid"
+DEFAULT_DAILY_PLAN_HOUR = 4  # local time
 DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = 58.0  # °F, centred 24 h mean
 DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS = 4.0  # °F
 DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = 30
@@ -247,6 +263,7 @@ CONTROL_MODES = [
     "resuming",       # power_on sent, waiting for hashing
     "latched",        # supply lockout latched
     "idle",           # miner not mining and we did not stop it
+    "daily",          # daily strategy: holding the day's planned power
 ]
 SHUTOFF_STATES = ["disabled", "running", "dwell", "stopped", "resuming", "suppressed"]
 AUTOTUNE_STATES = ["off", "learning", "ready", "active", "evaluating", "rolled_back"]

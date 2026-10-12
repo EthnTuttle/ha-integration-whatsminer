@@ -221,6 +221,10 @@ def test_stair_up_cost_to_2000w(monkeypatch):
 
 def test_crash_loop_at_pid_chosen_limit_above_power_min_is_learned(monkeypatch):
     """A loop at a limit the PID chose (1300 W, hardware floor 1500 W) is floor evidence too."""
+    # The Rig's first poll is a day-long run at 1300 W, which since 1.10.0 is
+    # fresh proof the miner holds 1300 W (restarts there would be a hardware
+    # fault). Age that proof out: this test is about a floor learned from scratch.
+    monkeypatch.setattr(controller_mod, "FLOOR_PROVEN_TTL_S", 0.0)
     rig = Rig(monkeypatch)
     miner = CrashLoopMiner(rig, floor_w=1500, limit=1300)
 
@@ -725,8 +729,15 @@ def test_floor_ceiling_stops_raising_and_notifies(monkeypatch):
         # ceiling = min(power_min + 1500, power_max - coarse step) = 2500
         assert limits(rig)[:6] == [1250, 1500, 1750, 2000, 2250, 2500], rig.calls
         floor = rig.pid_state["power_floor"]
-        assert floor["effective"] == 2500 and floor["exhausted"] is True
+        # Since 1.10.0 restarts at every limit up to the ceiling are a hardware
+        # fault: the episode's raises are undone (back to power_min) and
+        # learning and enforcement are suspended until a run holds.
+        assert floor["effective"] == 1000 and floor["learned"] is None, floor
+        assert floor["exhausted"] is True and floor["learning_suspended"] is True
+        assert floor["hardware_fault_suspected"] is True
         assert created("floor_ceiling") == 1
+        assert "reverted to 1000 W" in notification("floor_ceiling")[0]
+        assert ("whatsminer_floor_raised") in pn.dismissed
         # Past the ceiling the floor is inert. The ordinary PID still acts on
         # the cold loop once the (no longer pinned) hold expires; each of its
         # commands is ours and re-arms the hold, so they come ≥ 600 s apart.
@@ -940,6 +951,9 @@ def test_no_demand_dwell_with_supply_hot_does_not_force_the_learned_floor(monkey
 
 
 def test_restarts_in_the_hot_band_and_window_do_not_count_then_learning_resumes(monkeypatch, caplog):
+    # As above: the Rig's day-long first run at 1500 W would otherwise be fresh
+    # proof of 1500 W and turn these restarts into hardware-fault evidence.
+    monkeypatch.setattr(controller_mod, "FLOOR_PROVEN_TTL_S", 0.0)
     rig = Rig(monkeypatch, **OVERNIGHT)
     miner = CrashLoopMiner(rig, floor_w=1750, limit=1500)
 
@@ -961,5 +975,105 @@ def test_restarts_in_the_hot_band_and_window_do_not_count_then_learning_resumes(
         assert floor["learned"] == 1750 and floor["unholdable_limit"] == 1500, floor
         assert miner.attempts[-1][0] - t_cool >= HOT_WINDOW
         assert no_critical(caplog) == []
+
+    run_async(go())
+
+
+# ------------------------------------------------- 1.10.0: hardware faults
+
+
+def test_2026_10_11_restarts_above_a_proven_limit_flag_a_fault_not_a_floor(monkeypatch):
+    """2026-10-11: the M64 held 2200 W, then (hashboard fault, errors 560-563)
+    restarted at 2450, 2700 and 3100 W. 1.9.0 ratcheted the floor to 2700 W;
+    a limit just held is not a power floor, so none of this may raise it."""
+    rig = Rig(monkeypatch)
+    miner = CrashLoopMiner(rig, floor_w=9999, limit=2200)
+    sends = spy_sends(rig)
+
+    async def go():
+        await rig.setup()
+        rig.set_supply(104.0)
+        await rig.tick()  # a day-long run at 2200 W: proven
+        floor = rig.pid_state["power_floor"]
+        assert floor["proven_ok"] == 2200 and floor["proven_ok_at"] is not None
+        for watts in (2450, 2700, 3100):
+            # The limit moves (as the PID would move it hours later); the
+            # miner then restarts there on its own, over and over.
+            miner.limit = miner.reported_limit = watts
+            miner.restart()
+            n = miner.crashes
+            await crash_loop(rig, miner, 30, supply=104.0, decay=0.0, until=lambda: miner.crashes >= n + 3)
+            await polls(rig, miner, 3)
+            floor = rig.pid_state["power_floor"]
+            assert floor["learned"] is None and floor["effective"] == 1000, (watts, floor)
+        assert floor["hardware_fault_suspected"] is True and floor["fault_short_runs"] >= 6, floor
+        assert floor["proven_ok"] == 2200  # the proof is never cleared by restarts
+        assert created("hardware_fault") == 1 and created("floor_raised") == 0
+        msg = notification("hardware_fault")[0]
+        assert "2200 W" in msg and "560-563" in msg
+        assert not any(fire for _, _, fire in sends), sends
+        assert Store.saved["whatsminer.e1.controller"]["floor_proven_ok_at"] is not None
+
+    run_async(go())
+
+
+def test_no_proven_history_restarts_to_the_ceiling_revert_floor_and_suspend_learning(monkeypatch):
+    rig = Rig(monkeypatch)
+    # A fresh boot (Elapsed 600 s, never 900 s): nothing has been proven.
+    miner = CrashLoopMiner(rig, floor_w=9999, uptime=600)
+    sends = spy_sends(rig)
+
+    async def go():
+        await start_at_cap(rig, miner)
+        assert rig.pid_state["power_floor"]["proven_ok"] is None
+        await crash_loop(rig, miner, 90, supply=123.0)
+        assert limits(rig)[:6] == [1250, 1500, 1750, 2000, 2250, 2500], rig.calls
+        floor = rig.pid_state["power_floor"]
+        assert floor["proven_ok"] is None
+        assert floor["learned"] is None and floor["effective"] == 1000, floor
+        assert floor["learning_suspended"] is True and floor["hardware_fault_suspected"] is True
+        saved = Store.saved["whatsminer.e1.controller"]
+        assert saved["floor_hw_fault"] is True and saved["floor_learned"] is None
+        assert "reverted to 1000 W" in notification("floor_ceiling")[0]
+        assert "service the hashboards" in notification("floor_ceiling")[0].lower()
+        # Enforcement is inert: nothing is fired at a floor after the ceiling.
+        last_raise = max(i for i, (_, w, _) in enumerate(sends) if w == 2500)
+        assert not any(fire for _, _, fire in sends[last_raise + 1:]), sends
+        assert rig.ctl._floor_fire(500, rig.clock.t + 3600) is False
+        # A run that holds FLOOR_STABLE_S clears the flag and learning resumes.
+        miner.floor_w = 0
+        rig.set_supply(104.0)
+        await crash_loop(rig, miner, 20)
+        floor = rig.pid_state["power_floor"]
+        assert floor["learning_suspended"] is False and floor["fault_short_runs"] == 0, floor
+        assert floor["hardware_fault_suspected"] is False and floor["exhausted"] is False
+        assert floor["proven_ok"] is not None
+
+    run_async(go())
+
+
+def test_genuine_low_floor_still_learns_below_proven_limits(monkeypatch):
+    """1000 W crash-loops, 1250 W and 1500 W hold: the Rig's proven 3293 W is
+    above all of it, so this is real floor evidence, learned as before."""
+    rig = Rig(monkeypatch)
+    miner = CrashLoopMiner(rig, floor_w=1250)
+
+    async def go():
+        await start_at_cap(rig, miner)
+        assert rig.pid_state["power_floor"]["proven_ok"] == 3293
+        await crash_loop(rig, miner, 90, supply=123.0, until=lambda: miner.limit >= miner.floor_w)
+        assert limits(rig) == [1250], rig.calls
+        floor = rig.pid_state["power_floor"]
+        assert floor["learned"] == 1250 and floor["unholdable_limit"] == 1000, floor
+        assert floor["fault_short_runs"] == 0 and floor["hardware_fault_suspected"] is False
+        assert created("floor_raised") == 1 and created("hardware_fault") == 0
+        await crash_loop(rig, miner, 16)  # 1250 W holds: proven, episode over
+        floor = rig.pid_state["power_floor"]
+        assert floor["proven_ok"] == 1250 and floor["short_runs"] == 0
+        miner.limit = miner.reported_limit = 1500  # and so does 1500 W
+        await crash_loop(rig, miner, 16)
+        floor = rig.pid_state["power_floor"]
+        assert floor["learned"] == 1250 and floor["proven_ok"] == 1250
+        assert floor["learning_suspended"] is False
 
     run_async(go())

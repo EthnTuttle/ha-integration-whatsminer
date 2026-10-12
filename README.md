@@ -42,6 +42,31 @@ All temperatures are in °F.
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
 
+## 1.10.0: hardware faults are not a power floor, and a daily strategy
+
+**Floor ratchet fix.** On 2026-10-11 the M64 held 2200 W, then a hashboard fault (errors 560–563) made it restart at 2450, 2700 and 3100 W. 1.9.0 read each restart as power-floor evidence and ratcheted the learned floor to 2700 W. From 1.10.0:
+
+- The lowest limit the miner has held for 15 min (`proven_ok`) is now kept with its timestamp (`proven_ok_at`, persisted) and is no longer cleared when the floor is raised.
+- An uncommanded restart at or above a limit proven in the last 7 days is a **hardware fault**, not floor evidence. It is counted (`fault_short_runs`) and logged, and the floor is not raised. After two of these, one **Miner hardware fault suspected** notification is sent. The integration cannot read the miner's error codes, so the notification points at the miner web UI or dashboard and codes 560–563.
+- If learning would climb past the ceiling (`Power Min` + 1500 W), the miner is restarting at every limit. The floor is **reverted** to its value before the episode began, and a persisted fault flag is set. Learning and floor enforcement then stay off until a run hashes for 15 min. The `floor_ceiling` notification now says "service the hashboards".
+- New `power_floor` fields: `proven_ok_at`, `fault_short_runs`, `hardware_fault_suspected` and `learning_suspended`. They appear on the Control Mode sensor as `power_floor_proven_ok_at`, `fault_short_runs`, `hardware_fault_suspected` and `floor_learning_suspended`.
+- **If 1.9.0 ratcheted your floor (e.g. to 2700 W) during a hardware fault, press Reset Learned Floor after upgrading.** A floor already learned is kept as it is. A `proven_ok` saved by an older version has no timestamp and counts as stale until the next 15 min run.
+
+**Daily strategy.** New option **Control strategy** in the first options step: `pid` (default, unchanged), `daily_observe` or `daily`. A second new option, **Daily plan hour** (default 4, local time), sets when the plan is made. Once a day at that hour (and at startup when there is no valid plan) the controller plans one power for the day:
+
+- `P_ff = P_avg24 · (65 − T_fc24) / max(65 − T_out24, 5)`, from the last 24 h mean power and outdoor temperature and the next 24 h mean forecast. With no outdoor or forecast data, `P_ff = P_avg24`.
+- `P_fb = 60 W/°F · (target − 24 h mean supply while mining)`.
+- `P_day` is `P_ff + P_fb`, rounded to 50 W, clamped to the effective floor through `Power Max`, and moved at most 750 W from the previous plan. With under 12 h of samples it keeps the current limit and retries within the hour.
+
+What each strategy does with the plan:
+
+- `daily_observe` runs the PID exactly as `pid` does, and only computes and publishes the plan.
+- `daily` sends `P_day` once when the plan changes, and skips it when it is within 100 W of the limit in force. Between plans there is no PID, soft start or predictive back-off.
+  - The chip and supply caps, the supply lockout, the freeze guard, the demand shutoff (stop and resume), Mining Control and floor enforcement act exactly as before.
+  - When a cap releases, or the miner comes back from a stop, the controller sends one command to return to `P_day`.
+  - The all-idle demand-lockout clamp and the dwell clamp are not applied in `daily`. The demand shutoff's stop still is.
+- The plan is published as `daily_plan` in the shared controller state. The Control Mode sensor shows it as `control_strategy`, `daily_plan_power`, `daily_plan_computed_at`, `daily_plan_next_at` and `daily_plan_reason`, and the controller logs it at INFO each day. The plan and its hourly aggregates are persisted.
+
 ## 1.9.0: autotune (observe by default)
 
 The controller now learns the loop from its own resumes and reports what gains it would use (see *Autotune*). New option **PID Autotune Mode** in the Demand step: `off`, `observe` (default), `active`.
@@ -126,6 +151,8 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | Power Max | `5000` W | Upper bound of the PID output |
 | PID Target Temperature | `167` °F | Initial setpoint (adjustable later from the number entity) |
 | Kp / Ki / Kd | `111.11` / `2.78` / `55.56` | Gains, W per °F (Kp), W per °F·s (Ki), W per °F/s (Kd) |
+| Control strategy | `pid` | `pid`: continuous PID. `daily_observe`: PID, plus the daily plan computed and published only. `daily`: hold one planned power per day, with every safety layer still active (see *1.10.0*) |
+| Daily plan hour | `4` | Local hour (0–23) at which the daily plan is recomputed |
 
 ### Safety
 
@@ -193,6 +220,7 @@ Each poll, the integration decides the power limit in this order; the first that
 4. **Demand lockout** (`demand_lockout` / `dwell`): every configured thermostat idle clamps to the effective floor (`Power Min`, or the learned floor), but never above an engaged cap's `Power Min`. With no zone calling, the zone pumps are off and the primary loop is stagnant, so there is no flow to dissipate power into. `dwell` means a shutoff dwell is also counting down.
 5. **Probe lost** (`fallback`): open-loop outdoor-reset curve.
 6. **Closed loop** (`pid`), shaped by the soft start and predictive limiting (see *Soft start and predictive limiting*). A predictive back-off to the floor bypasses the time throttle and the boot hold like a cap.
+   With Control strategy `daily` this is `daily` instead: the day's planned power, sent once per plan; demand lockout (4) is not applied (see *1.10.0*).
 
 `idle` means the miner is not mining and the integration did not stop it (Mining Control off, firmware shutoff, power loss).
 
@@ -210,6 +238,8 @@ The chip-temp cap guards the miner; the supply caps guard the plant. The supply 
 The firmware treats `adjust_power_limit` as a ceiling and accepts any value. Below the hashboards' real minimum it cannot find a frequency solution and simply restarts btminer, forever (an M64 at 1000 W cycles every 2.5–4 min and never hashes). Before 1.6 every such restart re-armed the 10 min boot hold, so the controller could never raise the limit again: a supply-cap clamp to an unholdable `Power Min` left the house cold until someone intervened.
 
 The controller now watches for restarts it did not command (an `Elapsed` regression confirmed by the next poll). Two in a row from runs shorter than 15 min at about the same limit prove that limit unholdable: the effective floor becomes limit + 250 W, is persisted, is sent through the boot hold, and every further crash in the same episode raises it another step. A run that hashes 15 min ends the episode. The floor replaces `Power Min` for the demand lockout, dwell, fallback curve and the PID's lower bound. Every safety cap (supply, chip-temp, and the freeze-guard hold over the supply lockout) still clamps to `Power Min`, and floor enforcement waits until the cap clears: less power into an over-temperature loop or chips beats more, and a crash loop dissipates less heat. Restarts while the supply is hot (a supply cap engaged, supply within 5°F of the cap, or either within the last 15 min) are not floor evidence, because the miner may be restarting on heat. Learning stops at `Power Min` + 1500 W; restarts above that are reported as a restart loop and left alone.
+
+A floor is about limits the miner cannot hold, so restarts at a limit it has held are a hardware fault (since 1.10.0). The lowest limit held for 15 min is remembered as `proven_ok` with `proven_ok_at`. An uncommanded restart at or above a limit proven in the last 7 days counts toward `fault_short_runs` instead of the floor. Two of those send one **hardware fault suspected** notification, and the floor is not raised. If an episode would push the floor past the ceiling, the miner is restarting at every limit. The floor goes back to its value before the episode, `learning_suspended` is set and persisted, and learning and floor enforcement stay off until a run hashes for 15 min.
 
 Each raise costs one commanded restart, and a 1000 → 2000 W climb costs about five crashes and 25 min, so set `Power Min` to a limit the miner is known to hold rather than relying on learning. The learned floor is shown in the Control Mode sensor's `power_floor_*` attributes and the `floor_raised` notification. **Reset Learned Floor** clears it after the hashboards have been serviced (on the M64 a crash loop at low limits goes with error codes 560–563, slot loss of balance: reseat the adapter/ribbon, re-torque the busbar). Raising `Power Min` above the learned floor also drops it.
 

@@ -53,6 +53,9 @@ class FakeMiner:
         self.v2_requests: list[dict] = []
         self.unlock_attempts = 0
         self.services: list[str] = []
+        self.powers: list = []  # set.miner.power params accepted
+        self.reject_power: int | None = None  # answer set.miner.power with this code
+        self.up_freq_finish = 1
         self.v3_port = 0
         self.v2_port = 0
         self._servers: list[asyncio.base_events.Server] = []
@@ -108,12 +111,19 @@ class FakeMiner:
             return {"code": 0, "when": 1, "msg": {"salt": SALT}}
         if cmd == "get.device.info" and req.get("param") == "miner":
             return {"code": 0, "msg": {"miner": {"working": "true" if self.working else "false"}}}
-        if cmd == "set.miner.service":
+        if cmd == "get.miner.status" and req.get("param") == "summary":
+            return {"code": 0, "msg": {"summary": {"up-freq-finish": self.up_freq_finish, "power-limit": 3500}}}
+        if cmd in ("set.miner.service", "set.miner.power"):
             if self.locked:
                 return {"code": -4, "msg": "no permission for write command"}
             expected = v3.v3_token(cmd, self.super_password, SALT, req["ts"])
             if req.get("account") != "super" or req.get("token") != expected:
                 return {"code": -2, "msg": "invalid token"}
+            if cmd == "set.miner.power":
+                if self.reject_power is not None:
+                    return {"code": self.reject_power, "msg": "rejected"}
+                self.powers.append(req["param"])
+                return {"code": 0, "msg": "ok", "desc": cmd}
             self.services.append(req["param"])
             self.working = req["param"] == "start"
             return {"code": 0, "msg": "ok"}

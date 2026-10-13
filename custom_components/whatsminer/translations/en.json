@@ -49,7 +49,8 @@
           "pid_ki": "PID Ki (integral)",
           "pid_kd": "PID Kd (derivative)",
           "control_strategy": "Control strategy",
-          "daily_plan_hour": "Daily plan hour"
+          "daily_plan_hour": "Daily plan hour",
+          "power_regulation": "Power Regulation"
         },
         "data_description": {
           "password": "The API password for the miner",
@@ -62,7 +63,8 @@
           "pid_ki": "Integral gain - eliminates steady-state error",
           "pid_kd": "Derivative gain - dampens overshoot",
           "control_strategy": "pid (default): the PID moves the limit continuously. daily_observe: PID unchanged, a once-a-day power plan is computed and published for comparison only. daily: hold the daily plan (one command a day); the PID, soft start and predictive back-off are off, while the safety caps, lockout, freeze guard, demand shutoff, Mining Control and learned floor stay active.",
-          "daily_plan_hour": "Local hour (0-23) at which the daily plan is recomputed from the last 24 h and the forecast."
+          "daily_plan_hour": "Local hour (0-23) at which the daily plan is recomputed from the last 24 h and the forecast.",
+          "power_regulation": "adjust_power_limit (legacy, default): every power change is a v2 limit change, which restarts mining. set_miner_power (v3): power changes use set.miner.power with no restart once the miner has finished frequency tuning; the v2 limit is raised to Maximum Power Limit as a ceiling (one restart) when more power is needed and the loop can take a boot at that power, and safety clamps while the miner is tuning still use the limit. Switch back to adjust_power_limit to roll back."
         }
       },
       "safety": {

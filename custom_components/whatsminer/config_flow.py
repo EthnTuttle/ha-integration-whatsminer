@@ -75,6 +75,7 @@ from .const import (
     CONF_PID_WEATHER_ENTITY,
     CONF_POWER_MAX,
     CONF_POWER_MIN,
+    CONF_POWER_REGULATION,
     CONF_SUPER_PASSWORD,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_FREEZE_GUARD_FORECAST_HOURS,
@@ -118,12 +119,14 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
+    DEFAULT_POWER_REGULATION,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SUPER_PASSWORD,
     AUTOTUNE_MODES,
     CONTROL_STRATEGIES,
     DEMAND_SHUTOFF_MODES,
     DOMAIN,
+    POWER_REGULATION_MODES,
 )
 from .coordinator import WhatsminerAPI
 
@@ -320,6 +323,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             CONF_DAILY_PLAN_HOUR, DEFAULT_DAILY_PLAN_HOUR
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                    vol.Optional(
+                        CONF_POWER_REGULATION,
+                        default=self._current_data.get(
+                            CONF_POWER_REGULATION, DEFAULT_POWER_REGULATION
+                        ),
+                    ): vol.In(POWER_REGULATION_MODES),
                 }
             ),
         )

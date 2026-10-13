@@ -70,6 +70,9 @@ DEFAULT_DATA = {
     # set.miner.service stop). Informational; is_mining stays hashrate-only.
     "miner_off": None,
     "miner_off_reason": None,
+    # v3 summary up-freq-finish; polled only with Power Regulation
+    # set_miner_power (None otherwise, or when the read failed).
+    "up_freq_finish": None,
 }
 
 
@@ -130,6 +133,10 @@ class WhatsminerAPI:
         # v3 (None when v3 carried it, or v2 is all the miner has). The
         # controller turns this into a notification.
         self.v3_fallback: str | None = None
+        # Power commands (1.11): the path the last one took, and why
+        # set.miner.power is being bypassed (None while it works).
+        self._power_path: str | None = None
+        self.power_fallback: str | None = None
 
     async def _send_raw(self, message: str, timeout: int = 10) -> bytes:
         """Send raw message to miner and get response bytes."""
@@ -511,11 +518,36 @@ class WhatsminerAPI:
         return await self._set_mining(False)
 
     async def set_power_limit(self, power_limit: int) -> dict:
-        """Set the power limit in watts."""
-        return await self.send_privileged_command(
+        """Set the power limit in watts (v2 adjust_power_limit: restarts btminer)."""
+        response = await self.send_privileged_command(
             "adjust_power_limit",
             power_limit=str(power_limit)
         )
+        self._power_path = "v2_fallback" if self.power_fallback else "v2"
+        return response
+
+    async def set_miner_power(self, watts: int) -> dict:
+        """Set the operating power in watts (v3 set.miner.power: no restart).
+
+        Raises WhatsminerV3Error; the controller decides whether to fall back
+        to set_power_limit (see controller._command_power).
+        """
+        response = await self.v3.set_miner_power(watts)
+        self._power_path = "v3"
+        self.power_fallback = None
+        return response
+
+    def note_power_fallback(self, reason: str | None) -> None:
+        """set.miner.power was rejected, so power changes go out as adjust_power_limit."""
+        self.power_fallback = reason
+        if reason:
+            self._power_path = "v2_fallback"
+
+    @property
+    def power_api(self) -> str:
+        """Which command carried the last power change: "v2" (adjust_power_limit),
+        "v3" (set.miner.power), "v2_fallback", or "unknown" before the first."""
+        return self._power_path or "unknown"
 
     async def test_connection(self) -> bool:
         """Test if the miner is reachable."""
@@ -538,12 +570,18 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         scan_interval: int,
         name: str,
         super_password: str = DEFAULT_SUPER_PASSWORD,
+        poll_up_freq: bool = False,
     ) -> None:
         """Initialize coordinator."""
         self.miner_ip = ip
         self.password = password
         self.port = port
         self.api = WhatsminerAPI(ip, port, password, super_password)
+        # Power Regulation set_miner_power (1.11) gates every set.miner.power
+        # on up-freq-finish, which only the v3 summary reports. One extra
+        # unauthenticated read per poll, made only with that option on so the
+        # legacy default polls exactly as before.
+        self.poll_up_freq = poll_up_freq
         self._failure_count = 0
         # Last MAC read from get_miner_info; keeps unique_ids stable if that
         # one command fails on a later poll.
@@ -715,6 +753,24 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         
         return hashboards
 
+    async def _read_up_freq_finish(self) -> int | None:
+        """v3 summary up-freq-finish (1 = frequency tuning done), None when unread.
+
+        After the v2 batch, like status: the firmware caps concurrent API
+        connections. A failed read is None, which the controller treats as
+        "still tuning" (set.miner.power deferred), never as tuned.
+        """
+        try:
+            summary = await self.api.v3.get_miner_status("summary")
+        except Exception as err:  # a poll must never fail on this read
+            _LOGGER.debug(f"v3 get.miner.status summary on {self.miner_ip} failed: {err!r}")
+            return None
+        value = summary.get("up-freq-finish")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     async def _async_update_data(self) -> dict:
         """Fetch data from miner.
 
@@ -738,6 +794,7 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             status_data = await self.api.get_status()
         except Exception as err:
             status_data = err
+        up_freq_finish = await self._read_up_freq_finish() if self.poll_up_freq else None
         for result in (summary_data, miner_info_data, devs_data, pools_data, status_data):
             if isinstance(result, Exception):
                 _LOGGER.debug(f"Request to {self.miner_ip} raised: {result!r}")
@@ -770,6 +827,7 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             data["mac"] = self._mac
 
             data.update(self._parse_summary(summary_data))
+            data["up_freq_finish"] = up_freq_finish
 
             if _ok(status_data):
                 status = self._parse_status(status_data)

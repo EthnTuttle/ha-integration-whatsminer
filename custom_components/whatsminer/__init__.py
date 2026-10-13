@@ -27,13 +27,16 @@ from .const import (
     CONF_PID_SUPPLY_TEMP_LOCKOUT,
     CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_TARGET_TEMP,
+    CONF_POWER_REGULATION,
     CONF_SUPER_PASSWORD,
     DEFAULT_PASSWORD,
     DEFAULT_PORT,
+    DEFAULT_POWER_REGULATION,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SUPER_PASSWORD,
     DOMAIN,
     PLATFORMS,
+    POWER_REGULATION_V3,
     REMOVED_OPTION_KEYS_V4,
 )
 from .controller import WhatsminerController
@@ -62,6 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         super_password = entry.options.get(CONF_SUPER_PASSWORD) or super_password
 
     _LOGGER.info(f"Setting up Whatsminer at {miner_ip}:{port}")
+    power_regulation = {**entry.data, **entry.options}.get(CONF_POWER_REGULATION, DEFAULT_POWER_REGULATION)
 
     # Create coordinator
     coordinator = WhatsminerCoordinator(
@@ -72,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         scan_interval=scan_interval,
         name=name,
         super_password=super_password,
+        poll_up_freq=power_regulation == POWER_REGULATION_V3,
     )
 
     # Perform initial data fetch. If the miner doesn't answer and we have seen
@@ -127,6 +132,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "pid_ki": None,
         "pid_kd": None,
         "outdoor_mean": None,
+        "power_regulation": {},     # power command path (1.11); published by the controller
     }
     controller = WhatsminerController(hass, entry, coordinator, pid_state, config)
     await controller.async_setup()

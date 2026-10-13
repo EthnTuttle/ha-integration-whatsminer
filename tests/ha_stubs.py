@@ -219,7 +219,37 @@ class FakeAPI:
         if "set_power_limit" in self.fail:
             raise RuntimeError("boom")
         self.calls.append(("set_power_limit", int(watts)))
+        self.power_api = "v2_fallback" if self.power_fallback else "v2"
         return {}
+
+    # set.miner.power (1.11). ``power_code`` answers it with that non-zero
+    # code (a rejection); "set_miner_power" in ``fail`` is a transport error.
+    power_code: int | None = None
+    power_fallback: str | None = None
+    power_api = "unknown"
+
+    async def set_miner_power(self, watts):
+        if "set_miner_power" in self.fail:
+            raise V3Error("connection refused", None)
+        if self.power_code is not None:
+            raise V3Error(f"code {self.power_code}", self.power_code)
+        self.calls.append(("set_miner_power", int(watts)))
+        self.power_api = "v3"
+        self.power_fallback = None
+        return {"code": 0}
+
+    def note_power_fallback(self, reason):
+        self.power_fallback = reason
+        if reason:
+            self.power_api = "v2_fallback"
+
+
+class V3Error(Exception):
+    """Stands in for api_v3.WhatsminerV3Error (code None: transport failure)."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class FakeCoordinator:

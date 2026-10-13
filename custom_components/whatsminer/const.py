@@ -204,6 +204,18 @@ DEFAULT_PID_AUTOTUNE_MODE = "observe"
 CONTROL_STRATEGIES = ["pid", "daily_observe", "daily"]
 DEFAULT_CONTROL_STRATEGY = "pid"
 DEFAULT_DAILY_PLAN_HOUR = 4  # local time
+# Power regulation (1.11.0): which command carries power changes.
+#   adjust_power_limit: v2, as before. Every change restarts btminer.
+#   set_miner_power: v3 set.miner.power changes the operating power with no
+#     restart once frequency tuning is done (verified on the M64 2026-10-12).
+#     The v2 limit becomes a ceiling at power_max, sent rarely; see
+#     docs/v1.11-power-regulation-plan.md.
+# Default legacy, so an update changes nothing until it is enabled.
+CONF_POWER_REGULATION = "power_regulation"
+POWER_REGULATION_LEGACY = "adjust_power_limit"
+POWER_REGULATION_V3 = "set_miner_power"
+POWER_REGULATION_MODES = [POWER_REGULATION_LEGACY, POWER_REGULATION_V3]
+DEFAULT_POWER_REGULATION = POWER_REGULATION_LEGACY
 DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = 58.0  # °F, centred 24 h mean
 DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS = 4.0  # °F
 DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = 30

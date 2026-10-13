@@ -77,6 +77,7 @@ class WhatsminerMiningSensor(CoordinatorEntity, BinarySensorEntity):
             "miner_off": self.coordinator.data.get("miner_off"),
             "miner_off_reason": self.coordinator.data.get("miner_off_reason"),
             "control_api": self.coordinator.api.control_api,
+            "power_api": getattr(self.coordinator.api, "power_api", None),
         }
 
     @property

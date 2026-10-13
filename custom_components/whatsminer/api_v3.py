@@ -1,4 +1,4 @@
-"""Whatsminer API v3 client (TCP 4433), used to stop and start mining.
+"""Whatsminer API v3 client (TCP 4433): mining stop/start and operating power.
 
 Why this exists: on the M64 firmware (20250409.15.REL) the v2 power_off does
 not keep the miner off. btminer restarts and resumes hashing within minutes,
@@ -7,6 +7,11 @@ boiler loop to 143°F). v3 set.miner.service stop holds: hashing goes to zero
 within ~15 s and stays there while the 4028 API keeps answering (Elapsed keeps
 counting, v2 status reports mineroff "by whatsminer api"). start resumes
 hashing within ~10 s.
+
+1.11: v3 set.miner.power changes the operating power without the btminer
+restart every v2 adjust_power_limit causes (verified 2026-10-12, see
+set_miner_power), and get.miner.status summary reports up-freq-finish, which
+says when it takes effect.
 
 Protocol (per asic-rs, whatsminer v3 backend, verified live):
 - Request and response are a 4-byte little-endian length prefix + JSON.
@@ -238,16 +243,15 @@ class WhatsminerV3API:
             except OSError:
                 pass
 
-    async def set_miner_service(self, action: str) -> dict:
-        """set.miner.service stop|start. Returns the response; raises unless code 0.
+    async def _write_unlocked(self, cmd: str, param) -> dict:
+        """A tokened write; returns the response, raises unless code 0.
 
         A -4 (write API closed) triggers an unlock and one retry per admin
         password tried (the configured one, then the default).
         """
-        cmd = "set.miner.service"
-        response = await self._write(cmd, action)
+        response = await self._write(cmd, param)
         if response.get("code") == CODE_NO_WRITE_PERMISSION:
-            _LOGGER.info("v3 %s %s on %s: write API closed, unlocking", cmd, action, self.host)
+            _LOGGER.info("v3 %s %s on %s: write API closed, unlocking", cmd, param, self.host)
             for index, password in enumerate(self._admin_candidates()):
                 try:
                     await self._unlock_once(password)
@@ -255,7 +259,7 @@ class WhatsminerV3API:
                     # A wrong password may just drop the socket; try the next one.
                     _LOGGER.debug("open_write_api attempt %d on %s failed: %s", index + 1, self.host, err)
                     continue
-                response = await self._write(cmd, action)
+                response = await self._write(cmd, param)
                 if response.get("code") != CODE_NO_WRITE_PERMISSION:
                     _LOGGER.info(
                         "Opened the v3 write API on %s%s", self.host,
@@ -269,7 +273,47 @@ class WhatsminerV3API:
                 )
         if response.get("code") != 0:
             raise WhatsminerV3Error(
-                f"v3 {cmd} {action} returned code {response.get('code')}: {response.get('msg')}",
+                f"v3 {cmd} {param} returned code {response.get('code')}: {response.get('msg')}",
                 response.get("code"),
             )
         return response
+
+    async def set_miner_service(self, action: str) -> dict:
+        """set.miner.service stop|start. Returns the response; raises unless code 0."""
+        return await self._write_unlocked("set.miner.service", action)
+
+    async def set_miner_power(self, watts: int) -> dict:
+        """set.miner.power: the operating power in watts, without a btminer restart.
+
+        Verified on the M64 (20250409.15.REL, API 3.0.1) on 2026-10-12: code
+        0, power ramped 1884 -> 1244 W in ~80 s with elapsed still counting
+        (/home/ethan/network/power-test-20261012-220429.log). The param is a
+        JSON number, not a string. It is only "dynamic effective" once
+        frequency tuning has finished (summary up-freq-finish 1); during
+        tuning the firmware defers it to the next boot. On API < 3.0.3 it is
+        not persisted, and a v2 adjust_power_limit discards it (the operating
+        power resets to the limit). Raises unless code 0.
+        """
+        try:
+            value = int(watts)
+        except (TypeError, ValueError) as err:
+            raise WhatsminerV3Error(f"set.miner.power needs whole watts, got {watts!r}") from err
+        if value <= 0:
+            raise WhatsminerV3Error(f"set.miner.power needs a positive wattage, got {value}")
+        return await self._write_unlocked("set.miner.power", value)
+
+    async def get_miner_status(self, param: str = "summary") -> dict:
+        """get.miner.status (no auth); returns msg[param] as a dict. Raises unless code 0.
+
+        The summary carries up-freq-finish (1 once frequency tuning is done),
+        which gates set.miner.power.
+        """
+        response = await self._rpc({"cmd": "get.miner.status", "param": param})
+        if response.get("code") != 0:
+            raise WhatsminerV3Error(
+                f"get.miner.status {param} returned code {response.get('code')}: {response.get('msg')}",
+                response.get("code"),
+            )
+        msg = response.get("msg")
+        section = msg.get(param) if isinstance(msg, dict) else None
+        return section if isinstance(section, dict) else {}

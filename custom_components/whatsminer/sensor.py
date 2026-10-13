@@ -722,6 +722,7 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
         freeze = self._pid_state.get("freeze_guard") or {}
         floor = self._pid_state.get("power_floor") or {}
         daily = self._pid_state.get("daily_plan") or {}
+        regulation = self._pid_state.get("power_regulation") or {}
         return {
             "supply_lockout_latched": bool(self._pid_state.get("lockout_latched")),
             "safety_engaged": bool(self._pid_state.get("safety_engaged")),
@@ -756,6 +757,14 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
             "daily_plan_computed_at": daily.get("computed_at"),
             "daily_plan_next_at": daily.get("next_at"),
             "daily_plan_reason": daily.get("reason"),
+            "power_regulation": regulation.get("mode"),
+            "power_command_path": regulation.get("path"),
+            "power_last_command": regulation.get("last_command"),
+            "up_freq_finish": regulation.get("up_freq_finish"),
+            "power_limit_ceiling": regulation.get("limit_w"),
+            "regulated_power": regulation.get("regulated_power_w"),
+            "regulated_power_established": regulation.get("established"),
+            "power_regulation_error": regulation.get("v3_error"),
             "pid_kp": self._pid_state.get("pid_kp"),
             "pid_ki": self._pid_state.get("pid_ki"),
             "pid_kd": self._pid_state.get("pid_kd"),

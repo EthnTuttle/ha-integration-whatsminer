@@ -42,6 +42,28 @@ All temperatures are in °F.
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
 
+## 1.11.0: power changes without restarts (opt-in)
+
+Every power change used to be a v2 `adjust_power_limit`, and each one restarts btminer: minutes of low or no hashrate, a fresh frequency tune, and the restart churn suspected behind the M64's hashrate faults. On 2026-10-12 the M64 (firmware 20250409.15.REL, API 3.0.1) accepted v3 `set.miner.power 1250` and ramped 1884 → 1244 W in about 80 s with no restart. New option **Power Regulation** in the first Configure step:
+
+- `adjust_power_limit` (**default**): unchanged. The update is a no-op until you switch.
+- `set_miner_power`: power changes (PID, demand-lockout clamp, dwell, supply/chip cap while hashing, fallback curve, daily plan, floor enforcement) go out as `set.miner.power`, with no restart.
+
+What changes when it is enabled (design and evidence: `docs/v1.11-power-regulation-plan.md`):
+
+- **The limit becomes a ceiling.** The v2 limit is raised to `Power Max` once, the first time the controller wants more than the limit in force and the loop can take a boot at `Power Max`: no cap engaged, supply not within 5°F of the cap, a zone calling, no shutoff dwell, soft start finished. Until then, and whenever those conditions fail, an increase above the limit goes out as `adjust_power_limit`, as before. Lowering `Power Max` lowers the ceiling once the miner is tuned.
+- **Gated on tuning.** `set.miner.power` only takes effect once frequency tuning has finished (`up-freq-finish` 1), so the integration now reads the v3 summary every poll (enabled mode only). While the miner tunes (15–20 min after a power change or any boot), no new power step is sent. Within 90 s of our own write, a lingering `1` is not trusted.
+- **Boot window.** During tuning `set.miner.power` would only apply at the next boot, so the supply and chip caps (and the freeze-guard hold) and the predictive back-off keep the old `adjust_power_limit` clamp. Every other change, floor enforcement included, is held and sent once tuned. After a reboot the miner tunes toward the ceiling until then. The caps, the back-off and a 45 min tuning timeout bound that window. The timeout sends the wanted power as the limit and keeps the ceiling down for 6 h.
+- **Re-established after every start.** After every mining start, btminer restart, HA restart or `adjust_power_limit`, the wanted operating power is re-sent once tuning finishes. This firmware forgets it on restart, and `adjust_power_limit` discards it. API 3.0.3+ keeps it. Re-sending is right in both cases.
+- **Fallback.** If the miner rejects `set.miner.power` with an error code after the write-unlock retry (or 4433 fails three times in a row), that change goes out as `adjust_power_limit`. One **Power change sent via adjust_power_limit** notification is raised, and v3 is tried again after 30 min.
+- **Learned floor.** Its evidence is now the operating power the miner ran at, not the limit (which is just the ceiling). Restarts at a power held in the last 7 days are still a hardware fault, not floor evidence. A power is credited as held only after 15 min in force. The floor still bounds the PID, the clamps and the fallback curve, so regulation never goes below the learned floor and `Power Min` is never the regulation target. Floor enforcement trusts the limit we sent, never a transient telemetry value. A reported limit is believed only after 3 polls and 2 min of uptime (the 1905 W derate of 2026-10-12 would otherwise have sent `adjust_power_limit(1950)` mid-regulation).
+- **Hashrate collapse.** If hashrate per watt falls below half its pre-step value for 3 polls within 30 min of a `set.miner.power` step, the step is undone with `adjust_power_limit`. For a reduction, the pre-step power also becomes the lowest power regulated to, until **Reset Learned Floor**, with a **Hashrate collapsed after a power reduction** notification.
+- **Observability.** The **Mining Status** binary sensor gains `power_api` (`v2`, `v3`, `v2_fallback`, `unknown`) next to `control_api`. The **Control Mode** sensor gains `power_regulation`, `power_command_path`, `power_last_command`, `up_freq_finish`, `power_limit_ceiling`, `regulated_power`, `regulated_power_established` and `power_regulation_error`.
+
+**Enable:** Configure → first step → Power Regulation `set_miner_power`. The API v3 Super Password must be right (the default `super` was accepted live). Expect one restart, when the ceiling is first raised; after that, PID changes should not restart the miner. Watch `power_command_path` and `power_last_command`.
+
+**Roll back:** set Power Regulation back to `adjust_power_limit`. The v3 summary read stops. On the first hashing tick outside a boot hold, the last regulated power is sent once as the limit (one restart), so the next boot does not tune toward the old ceiling. After that everything is as in 1.10.0.
+
 ## 1.10.0: hardware faults are not a power floor, and a daily strategy
 
 **Floor ratchet fix.** On 2026-10-11 the M64 held 2200 W, then a hashboard fault (errors 560–563) made it restart at 2450, 2700 and 3100 W. 1.9.0 read each restart as power-floor evidence and ratcheted the learned floor to 2700 W. From 1.10.0:
@@ -153,6 +175,7 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | Kp / Ki / Kd | `111.11` / `2.78` / `55.56` | Gains, W per °F (Kp), W per °F·s (Ki), W per °F/s (Kd) |
 | Control strategy | `pid` | `pid`: continuous PID. `daily_observe`: PID, plus the daily plan computed and published only. `daily`: hold one planned power per day, with every safety layer still active (see *1.10.0*) |
 | Daily plan hour | `4` | Local hour (0–23) at which the daily plan is recomputed |
+| Power Regulation | `adjust_power_limit` | `adjust_power_limit`: every power change is a v2 limit change (restarts mining). `set_miner_power`: v3 `set.miner.power`, no restart once tuned; the limit becomes a ceiling at `Power Max` (see *1.11.0*) |
 
 ### Safety
 

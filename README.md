@@ -43,6 +43,19 @@ All temperatures are in °F.
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
 
+## 1.13.0: daily plan with live PID trim (opt-in)
+
+New Control strategy **`daily_trim`** sits between `pid` and `daily`. The daily plan runs as under `daily_observe`/`daily` (once a day at the Daily plan hour, at startup when the plan is stale), but the actuation is exactly `pid` — soft start, predictive back-off, setpoint ramp, actuation gates, supply/chip caps, the 140°F lockout, the freeze guard, the demand shutoff and floor enforcement all behave as they do under `pid` — with the PID's effective output envelope intersected each tick with **[P_day − 500 W, P_day + 500 W]**.
+
+- **The band only narrows.** It never grants authority `pid` would not have; every cap and lockout still wins. If the existing bounds leave no overlap with the band (e.g. an envelope far below it), the tick is exactly what `pid` would do.
+- **No plan, no band.** With under 12 h of samples there is no valid plan and the controller is plain `pid` until the first plan lands (retried on the plan's hourly cadence). A recomputed plan moves the band on the next tick.
+- **How it differs:** `daily` holds one power all day and eats a wrong plan until the next plan hour; `daily_trim` lets the PID correct the plan's error within the ±500 W band using the moves it would make anyway. `daily_observe` never actuates from the plan at all.
+- **The 750 W/day plan rate limit is removed** (it was written for open-loop `daily`; `daily_trim` absorbs the plan error live). The 50 W rounding and the floor..Power Max clamp are unchanged. This applies to `daily` as well.
+- **Observability:** the Control Mode sensor gains a `daily_trim_active` boolean (true while a valid plan is in force). The existing effective output bounds diagnostics show the narrowed envelope.
+- **Honest limits:** the plan still needs ≥12 h of samples; the band is ±500 W, so a plan wrong by more than that leaves the supply off target until the next plan.
+
+**Enable:** Configure → first step → Control strategy `daily_trim`.
+
 ## 1.12.0: firmware updates from a service call
 
 New service **`whatsminer.update_firmware`** uploads an official `whatsminer-all-*.bin` to the miner over API v3 (`set.system.update_firmware`, port 4433, super password — the same flow the vendor tool's web API uses). The miner validates the bundle, applies it and reboots itself.
@@ -99,7 +112,7 @@ What changes when it is enabled (design and evidence: `docs/v1.11-power-regulati
 
 - `P_ff = P_avg24 · (65 − T_fc24) / max(65 − T_out24, 5)`, from the last 24 h mean power and outdoor temperature and the next 24 h mean forecast. With no outdoor or forecast data, `P_ff = P_avg24`.
 - `P_fb = 60 W/°F · (target − 24 h mean supply while mining)`.
-- `P_day` is `P_ff + P_fb`, rounded to 50 W, clamped to the effective floor through `Power Max`, and moved at most 750 W from the previous plan. With under 12 h of samples it keeps the current limit and retries within the hour.
+- `P_day` is `P_ff + P_fb`, rounded to 50 W and clamped to the effective floor through `Power Max`. (Until 1.13.0 it was also moved at most 750 W from the previous plan; that rate limit was removed in 1.13.0.) With under 12 h of samples it keeps the current limit and retries within the hour.
 
 What each strategy does with the plan:
 
@@ -194,7 +207,7 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | Power Max | `5000` W | Upper bound of the PID output |
 | PID Target Temperature | `167` °F | Initial setpoint (adjustable later from the number entity) |
 | Kp / Ki / Kd | `111.11` / `2.78` / `55.56` | Gains, W per °F (Kp), W per °F·s (Ki), W per °F/s (Kd) |
-| Control strategy | `pid` | `pid`: continuous PID. `daily_observe`: PID, plus the daily plan computed and published only. `daily`: hold one planned power per day, with every safety layer still active (see *1.10.0*) |
+| Control strategy | `pid` | `pid`: continuous PID. `daily_observe`: PID, plus the daily plan computed and published only. `daily`: hold one planned power per day, with every safety layer still active (see *1.10.0*). `daily_trim`: PID as under `pid`, but held within ±500 W of the daily plan (see *1.13.0*) |
 | Daily plan hour | `4` | Local hour (0–23) at which the daily plan is recomputed |
 | Power Regulation | `adjust_power_limit` | `adjust_power_limit`: every power change is a v2 limit change (restarts mining). `set_miner_power`: v3 `set.miner.power`, no restart once tuned; the limit becomes a ceiling at `Power Max` (see *1.11.0*) |
 

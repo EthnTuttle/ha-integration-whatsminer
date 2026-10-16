@@ -206,7 +206,13 @@ DEFAULT_PID_AUTOTUNE_MODE = "observe"
 #     no PID, soft-start or predictive changes. Safety caps, the supply
 #     lockout, the freeze guard, the demand shutoff, Mining Control and floor
 #     enforcement keep their authority.
-CONTROL_STRATEGIES = ["pid", "daily_observe", "daily"]
+#   daily_trim (1.13.0): the PID, soft start and predictive back-off run as
+#     under pid, but the output envelope is intersected with
+#     [plan - DAILY_TRIM_BAND, plan + DAILY_TRIM_BAND] once a valid plan
+#     exists. The band only narrows; every cap and lockout still wins.
+CONTROL_STRATEGIES = ["pid", "daily_observe", "daily", "daily_trim"]
+# ±W around the daily plan the PID may trim within, under daily_trim.
+DAILY_TRIM_BAND = 500
 DEFAULT_CONTROL_STRATEGY = "pid"
 DEFAULT_DAILY_PLAN_HOUR = 4  # local time
 # Power regulation (1.11.0): which command carries power changes.

@@ -55,7 +55,6 @@ def track_limit(rig):
 
 
 def test_warmer_forecast_plans_less_power(monkeypatch):
-    monkeypatch.setattr(controller_mod, "DAILY_MAX_STEP_W", 10_000)
     rig = Rig(monkeypatch, **OBSERVE)
     rig.coord.data["wattage_limit"] = 3000
     fill(rig, power=3000.0, supply=104.0, outdoor=35.0)
@@ -71,7 +70,6 @@ def test_warmer_forecast_plans_less_power(monkeypatch):
 
 
 def test_supply_above_target_plans_less_power(monkeypatch):
-    monkeypatch.setattr(controller_mod, "DAILY_MAX_STEP_W", 10_000)
     rig = Rig(monkeypatch, **OBSERVE)
     rig.coord.data["wattage_limit"] = 3000
     fill(rig, power=3000.0, supply=110.0, outdoor=35.0)  # target 104
@@ -88,15 +86,16 @@ def test_missing_outdoor_data_uses_mean_power(monkeypatch):
     assert p["p_ff"] == 3000.0 and p["t_fc24"] is None and p["power_w"] == 3000, p
 
 
-def test_plan_is_step_limited_from_the_previous_plan(monkeypatch):
+def test_plan_is_no_longer_step_limited_from_the_previous_plan(monkeypatch):
+    """1.13.0 removed the ±750 W/day plan move limit for both daily strategies."""
     rig = Rig(monkeypatch, **OBSERVE)
     rig.coord.data["wattage_limit"] = 3000
     fill(rig, power=3000.0, supply=104.0, outdoor=35.0)
     first = plan(rig, forecast(rig, 35.0))
     assert first["power_w"] == 3000
     second = plan(rig, forecast(rig, 55.0))  # raw 3000·10/30 = 1000
-    assert second["power_w"] == 3000 - controller_mod.DAILY_MAX_STEP_W, second
-    assert "step-limited" in second["reason"]
+    assert second["power_w"] == 1000, second
+    assert "step-limited" not in second["reason"]
     # And clamped to the effective floor / power_max.
     fill(rig, power=5000.0, supply=80.0, outdoor=35.0)
     rig.ctl._daily_plan = {**second, "power_w": 4900}

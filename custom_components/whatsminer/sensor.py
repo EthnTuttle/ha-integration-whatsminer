@@ -757,6 +757,7 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
             "daily_plan_computed_at": daily.get("computed_at"),
             "daily_plan_next_at": daily.get("next_at"),
             "daily_plan_reason": daily.get("reason"),
+            "daily_trim_active": bool(daily.get("trim_active")),
             "power_regulation": regulation.get("mode"),
             "power_command_path": regulation.get("path"),
             "power_last_command": regulation.get("last_command"),

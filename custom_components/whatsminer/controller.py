@@ -89,6 +89,7 @@ from .const import (
     CONF_POWER_MIN,
     CONF_POWER_REGULATION,
     CONTROL_STRATEGIES,
+    DAILY_TRIM_BAND,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_CONTROL_STRATEGY,
     DEFAULT_DAILY_PLAN_HOUR,
@@ -304,8 +305,8 @@ OUTDOOR_SAMPLE_INTERVAL_S = 3600.0
 #
 #   P_ff  = P_avg24 · (T_bal − T_fc24) / max(T_bal − T_out24, DAILY_MIN_SPAN_F)
 #   P_fb  = DAILY_KP_W_PER_F · (target − S_avg24)
-#   P_day = clamp(round(P_ff + P_fb, DAILY_ROUND_W), floor, power_max),
-#           moved at most DAILY_MAX_STEP_W from the previous plan
+#   P_day = clamp(round(P_ff + P_fb, DAILY_ROUND_W), floor, power_max)
+#           (the 1.10 ±750 W/day plan step was removed in 1.13.0)
 #
 #   P_avg24  mean miner input power over the past 24 h (not mining = 0 W)
 #   T_out24  mean outdoor temperature over the past 24 h
@@ -327,7 +328,6 @@ OUTDOOR_SAMPLE_INTERVAL_S = 3600.0
 DAILY_BALANCE_F = 65.0
 DAILY_MIN_SPAN_F = 5.0
 DAILY_KP_W_PER_F = 60.0
-DAILY_MAX_STEP_W = 750
 DAILY_DEADBAND_W = 100
 DAILY_ROUND_W = 50
 DAILY_MIN_HOURS = 12
@@ -2713,11 +2713,6 @@ class WhatsminerController:
             raw = p_ff + p_fb
             power = int(round(raw / DAILY_ROUND_W) * DAILY_ROUND_W)
             power = max(floor, min(top, power))
-            if prev is not None:
-                stepped = max(prev - DAILY_MAX_STEP_W, min(prev + DAILY_MAX_STEP_W, power))
-                if stepped != power:
-                    reason += f"; step-limited to ±{DAILY_MAX_STEP_W} W from {prev} W"
-                power = max(floor, min(top, stepped))
             next_at = self._next_plan_at(now)
         self._daily_plan = {
             "power_w": None if power is None else int(power),
@@ -2742,6 +2737,11 @@ class WhatsminerController:
         self._publish_daily()
         self._save_later()
 
+    def _trim_plan_valid(self) -> bool:
+        """daily_trim: a computed plan is in force (not the <12 h hold)."""
+        plan = self._daily_plan or {}
+        return plan.get("power_w") is not None and plan.get("p_ff") is not None
+
     def _publish_daily(self) -> None:
         plan = self._daily_plan or {}
         self._pid_state["daily_plan"] = {
@@ -2756,6 +2756,7 @@ class WhatsminerController:
             "p_ff": plan.get("p_ff"),
             "p_fb": plan.get("p_fb"),
             "samples_h": plan.get("samples_h"),
+            "trim_active": self._strategy == "daily_trim" and self._trim_plan_valid(),
             "reason": plan.get("reason") if self._strategy != "pid" else "strategy is pid",
         }
 
@@ -2976,6 +2977,17 @@ class WhatsminerController:
                     surplus_score = round(max(0.0, min(1.0, surplus_score)) / 0.05) * 0.05
             multiplier = min(price_score, surplus_score, 1.0)
             self._pid.out_max = self._pid.out_min + (self._pid.out_max - self._pid.out_min) * multiplier
+        # daily_trim: intersect the envelope with the plan band. The band can
+        # only narrow; caps, lockouts and the floor clamp downstream exactly
+        # as under pid. If the band leaves no overlap with the existing
+        # bounds (a cap/envelope wholly below P_day - DAILY_TRIM_BAND), the
+        # existing bounds win and the tick is what pid would do.
+        if self._strategy == "daily_trim" and self._trim_plan_valid():
+            planned = float(self._daily_plan["power_w"])
+            lo = max(self._pid.out_min, planned - DAILY_TRIM_BAND)
+            hi = min(self._pid.out_max, planned + DAILY_TRIM_BAND)
+            if lo <= hi:
+                self._pid.out_min, self._pid.out_max = lo, hi
         self._pid_state["out_max_effective"] = int(self._pid.out_max)
         self._pid_state["out_min_effective"] = int(self._pid.out_min)
 

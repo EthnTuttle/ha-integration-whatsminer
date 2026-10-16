@@ -209,5 +209,21 @@
         }
       }
     }
+  },
+  "services": {
+    "update_firmware": {
+      "name": "Update firmware",
+      "description": "Uploads an official WhatsMiner firmware bundle (.bin) to the miner, which validates it, applies it and reboots. CAUTION: the miner stops mining and goes offline for several minutes; recent firmware cannot be rolled back. Place the file where Home Assistant can read it (e.g. under the config directory) and pass its path.",
+      "fields": {
+        "path": {
+          "name": "Firmware path",
+          "description": "Path to the official whatsminer-all-*.bin (relative paths are resolved against the Home Assistant config directory)."
+        },
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "Config entry ID of the miner to update. Required only when more than one Whatsminer is configured."
+        }
+      }
+    }
   }
 }

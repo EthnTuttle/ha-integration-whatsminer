@@ -3,6 +3,11 @@ from homeassistant.const import Platform
 
 DOMAIN = "whatsminer"
 
+# Firmware update service (official v3 set.system.update_firmware flow).
+SERVICE_UPDATE_FIRMWARE = "update_firmware"
+EVENT_FIRMWARE_UPDATE = f"{DOMAIN}_firmware_update"
+FIRMWARE_LOCKS_KEY = "firmware_locks"
+
 # Platforms
 PLATFORMS = [
     Platform.BUTTON,

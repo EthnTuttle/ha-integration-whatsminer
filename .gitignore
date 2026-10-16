@@ -15,3 +15,6 @@ Thumbs.db
 
 # PID tuning captures (scripts/pid-capture.py output)
 pid-run-*.json
+*.bin
+*.har
+/WhatsMiner*Guide*.pdf

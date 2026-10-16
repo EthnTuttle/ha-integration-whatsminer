@@ -1,4 +1,5 @@
-"""Whatsminer API v3 client (TCP 4433): mining stop/start and operating power.
+"""Whatsminer API v3 client (TCP 4433): mining stop/start, operating power,
+and firmware updates.
 
 Why this exists: on the M64 firmware (20250409.15.REL) the v2 power_off does
 not keep the miner off. btminer restarts and resumes hashing within minutes,
@@ -23,6 +24,15 @@ Protocol (per asic-rs, whatsminer v3 backend, verified live):
   write API is opened on the v2 port: open_write_api on 4028 (plain JSON),
   then {"token": md5(time + newsalt + UNLOCK_MAGIC + md5crypt(admin, salt))}
   on the same socket. The unlock persists, so it is done only on -4.
+
+Firmware update note (2026-10-15): the init/upload/final flow is the
+vendor-documented set.system.update_firmware. Live observation on
+20250409.15.REL: the daemon accepts the combined whatsminer-all-*.bin and
+answers code 0, but its boot applier silently skips that container (the
+miner stayed on the old release; the upgrade only landed via the 8889
+single-sub-image path, see ~/network/wmt-re). Expect this service to apply
+cleanly on firmware new enough to self-select bundle entries; on older
+firmware the final code-0 without a version change is the known symptom.
 
 Passwords and tokens are never logged.
 """
@@ -57,6 +67,21 @@ MAX_FRAME = 1 << 20
 
 SERVICE_STOP = "stop"
 SERVICE_START = "start"
+
+# set.system.update_firmware (official flow, apidoc.whatsminer.com 3.0.0):
+# tokened init JSON -> {"code": 0, "msg": "ready"} -> u32 LE total size +
+# raw bundle bytes on the SAME connection -> framed JSON confirmation.
+# The miner itself parses the bundle and picks the right sub-image.
+# Live-verified on M64 (20250409.15.REL, 2026-10-14): init answered "ready".
+CMD_UPDATE_FIRMWARE = "set.system.update_firmware"
+UPDATE_MSG_READY = "ready"
+UPLOAD_CHUNK = 64 * 1024
+# The biggest stock bundle we know is ~43 MB (whatsminer-all-20260908.12);
+# refuse anything wildly larger before touching the socket.
+MAX_FIRMWARE_BYTES = 64 * 1024 * 1024
+# Flashing/verification happens between upload and the final reply.
+UPDATE_FINAL_TIMEOUT = 360.0
+UPDATE_PROGRESS_STEP = 1 * 1024 * 1024
 
 
 class WhatsminerV3Error(Exception):
@@ -317,3 +342,121 @@ class WhatsminerV3API:
         msg = response.get("msg")
         section = msg.get(param) if isinstance(msg, dict) else None
         return section if isinstance(section, dict) else {}
+
+    async def _update_firmware_once(self, data: bytes, progress) -> dict:
+        """One full update_firmware attempt on ONE connection.
+
+        Returns the init response when init was refused (caller decides);
+        after bytes were streamed, returns the final confirmation instead.
+        """
+        salt = (await self.get_device_info("salt")).get("salt")
+        if not salt:
+            raise WhatsminerV3Error("v3 salt missing from get.device.info")
+        ts = int(time.time())
+        init = {
+            "cmd": CMD_UPDATE_FIRMWARE,
+            "token": v3_token(CMD_UPDATE_FIRMWARE, self.super_password, salt, ts),
+            "account": "super",
+            "ts": ts,
+        }
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port), timeout=self.timeout
+            )
+        except (asyncio.TimeoutError, OSError) as err:
+            raise WhatsminerV3Error(f"cannot connect to {self.host}:{self.port}: {err!r}") from err
+        try:
+            writer.write(encode_frame(init))
+            await writer.drain()
+            header = await asyncio.wait_for(reader.readexactly(4), timeout=self.timeout)
+            (length,) = struct.unpack("<I", header)
+            if length > MAX_FRAME:
+                raise WhatsminerV3Error(f"v3 frame of {length} bytes refused")
+            body = await asyncio.wait_for(reader.readexactly(length), timeout=self.timeout)
+            reply = json.loads(body.decode("utf-8", errors="ignore"))
+            if reply.get("code") == CODE_NO_WRITE_PERMISSION:
+                # Caller unlocks the write API and retries the whole flow.
+                return reply
+            if not (reply.get("code") == 0
+                    and str(reply.get("msg", "")).lower() == UPDATE_MSG_READY):
+                # Refused before any byte was staged: raise now, so a
+                # code-0 "busy" can never masquerade as success.
+                raise WhatsminerV3Error(
+                    f"v3 update_firmware on {self.host} refused at init: "
+                    f"code {reply.get('code')}: {reply.get('msg')}",
+                    reply.get("code"),
+                )
+            _LOGGER.info("v3 firmware upload to %s: %d bytes", self.host, len(data))
+            writer.write(struct.pack("<I", len(data)))
+            sent = 0
+            start = time.monotonic()
+            for off in range(0, len(data), UPLOAD_CHUNK):
+                writer.write(data[off:off + UPLOAD_CHUNK])
+                await writer.drain()
+                sent = min(off + UPLOAD_CHUNK, len(data))
+                if progress is not None and (
+                        sent % UPDATE_PROGRESS_STEP < UPLOAD_CHUNK or sent == len(data)):
+                    progress(sent, len(data))
+            _LOGGER.info(
+                "v3 firmware upload to %s: streamed %d bytes in %.1f s; awaiting flash result",
+                self.host, len(data), time.monotonic() - start,
+            )
+            header = await asyncio.wait_for(reader.readexactly(4), timeout=UPDATE_FINAL_TIMEOUT)
+            (length,) = struct.unpack("<I", header)
+            if length > MAX_FRAME:
+                raise WhatsminerV3Error(f"v3 frame of {length} bytes refused")
+            body = await asyncio.wait_for(reader.readexactly(length), timeout=UPDATE_FINAL_TIMEOUT)
+            return json.loads(body.decode("utf-8", errors="ignore"))
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError, OSError) as err:
+            raise WhatsminerV3Error(
+                f"v3 firmware upload to {self.host} failed mid-flow: {err!r}") from err
+        except json.JSONDecodeError as err:
+            raise WhatsminerV3Error(f"v3 firmware update on {self.host} returned invalid JSON: {err}") from err
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    async def update_firmware(self, data: bytes, progress=None) -> dict:
+        """Upload a complete official firmware bundle (set.system.update_firmware).
+
+        ``data`` is the whole ``whatsminer-all-*.bin`` file; the miner parses
+        it and picks its own sub-image. progress(sent, total) is called as
+        chunks are written. A -4 (write API closed) triggers the v2
+        open_write_api unlock and one retry per admin password, exactly like
+        the other writes. The init is refused BEFORE any byte is uploaded on
+        wrong credentials or a busy miner. Raises unless the final code is 0.
+        Returns the final response.
+        """
+        if not data:
+            raise WhatsminerV3Error("empty firmware image")
+        if len(data) > MAX_FIRMWARE_BYTES:
+            raise WhatsminerV3Error(
+                f"firmware image of {len(data)} bytes exceeds the {MAX_FIRMWARE_BYTES}-byte sanity cap"
+            )
+        response = await self._update_firmware_once(data, progress)
+        if response.get("code") == CODE_NO_WRITE_PERMISSION:
+            _LOGGER.info("v3 update_firmware on %s: write API closed, unlocking", self.host)
+            for index, password in enumerate(self._admin_candidates()):
+                try:
+                    await self._unlock_once(password)
+                except WhatsminerV3Error as err:
+                    _LOGGER.debug("open_write_api attempt %d on %s failed: %s", index + 1, self.host, err)
+                    continue
+                response = await self._update_firmware_once(data, progress)
+                if response.get("code") != CODE_NO_WRITE_PERMISSION:
+                    break
+            else:
+                raise WhatsminerV3Error(
+                    f"v3 write API still closed on {self.host} after open_write_api",
+                    CODE_NO_WRITE_PERMISSION,
+                )
+        if response.get("code") != 0:
+            raise WhatsminerV3Error(
+                f"v3 update_firmware on {self.host} returned code {response.get('code')}: "
+                f"{response.get('msg')}",
+                response.get("code"),
+            )
+        return response

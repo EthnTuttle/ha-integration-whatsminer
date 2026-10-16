@@ -1,15 +1,19 @@
 """The Whatsminer integration."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT, CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api_v3 import MAX_FIRMWARE_BYTES, WhatsminerV3Error
 from .braiins import BraiinsPoolClient, BraiinsPoolCoordinator
 from .const import (
     CONF_BRAIINS_POOL_TOKEN,
@@ -35,15 +39,130 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SUPER_PASSWORD,
     DOMAIN,
+    EVENT_FIRMWARE_UPDATE,
+    FIRMWARE_LOCKS_KEY,
     PLATFORMS,
     POWER_REGULATION_V3,
     REMOVED_OPTION_KEYS_V4,
+    SERVICE_UPDATE_FIRMWARE,
 )
 from .controller import WhatsminerController
 from .coordinator import DEFAULT_DATA, WhatsminerCoordinator
+from .firmware_image import FirmwareImageError, inspect_bundle
 from .unit_helpers import c_to_f
 
 _LOGGER = logging.getLogger(__name__)
+
+def _resolve_firmware_entry(hass: HomeAssistant, entry_id: str | None) -> ConfigEntry:
+    """Pick the one loaded Whatsminer entry unless entry_id names another."""
+    domain_data = hass.data.get(DOMAIN, {})
+    if entry_id:
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            raise HomeAssistantError(f"no such Whatsminer config entry: {entry_id}")
+        if entry.entry_id not in domain_data:
+            raise HomeAssistantError(f"Whatsminer entry {entry_id} is not loaded")
+        return entry
+    loaded = [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id in domain_data]
+    if len(loaded) != 1:
+        raise HomeAssistantError(
+            "multiple Whatsminer miners are configured; pass entry_id (one of: "
+            + ", ".join(e.entry_id for e in loaded) + ")"
+        )
+    return loaded[0]
+
+
+def _load_firmware_file(path: str) -> tuple[bytes, dict]:
+    """Executor thread: read and preflight-validate the bundle. No sockets here."""
+    if not os.path.isfile(path):
+        raise FirmwareImageError(f"no such file: {path}")
+    size = os.path.getsize(path)
+    if size > MAX_FIRMWARE_BYTES:
+        raise FirmwareImageError(
+            f"{size} bytes exceeds the {MAX_FIRMWARE_BYTES}-byte sanity cap")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    return data, inspect_bundle(data)
+
+
+async def _async_update_firmware(hass: HomeAssistant, call) -> None:
+    """Upload an official WhatsMiner bundle via v3 set.system.update_firmware."""
+    entry = _resolve_firmware_entry(hass, call.data.get("entry_id"))
+    domain_data = hass.data[DOMAIN]
+    coordinator = domain_data[entry.entry_id].get("coordinator")
+    v3 = getattr(coordinator, "v3", None)
+    if v3 is None:
+        raise HomeAssistantError(f"{entry.title}: miner v3 client not available")
+    raw_path = str(call.data["path"]).strip()
+    path = raw_path if os.path.isabs(raw_path) else hass.config.path(raw_path)
+
+    locks = domain_data.setdefault(FIRMWARE_LOCKS_KEY, {})
+    lock = locks.setdefault(entry.entry_id, asyncio.Lock())
+    if lock.locked():
+        raise HomeAssistantError(f"a firmware update is already running for {entry.title}")
+
+    async with lock:
+        try:
+            data, info = await hass.async_add_executor_job(_load_firmware_file, path)
+        except (OSError, FirmwareImageError, ValueError) as err:
+            raise HomeAssistantError(f"firmware image refused: {err}") from err
+        keys = ", ".join(e["key"] for e in info["entries"])
+        _LOGGER.warning(
+            "Firmware update for %s from %s: %d bytes, sha256 %.16s…, sub-images: %s",
+            entry.title, path, info["size"], info["sha256"], keys)
+        base = {
+            "entry_id": entry.entry_id,
+            "host": entry.data[CONF_HOST],
+            "total": info["size"],
+            "sha256": info["sha256"][:16],
+        }
+        hass.bus.async_fire(EVENT_FIRMWARE_UPDATE, {**base, "phase": "start"})
+        notify_id = f"{DOMAIN}_firmware_{entry.entry_id}"
+        mark = {"sent": 0}
+
+        def _progress(sent: int, total: int) -> None:
+            if sent != total and sent - mark["sent"] < 4 * 1024 * 1024:
+                return
+            mark["sent"] = sent
+            hass.bus.async_fire(EVENT_FIRMWARE_UPDATE, {**base, "phase": "progress", "sent": sent})
+
+        try:
+            await v3.update_firmware(data, _progress)
+        except WhatsminerV3Error as err:
+            hass.bus.async_fire(EVENT_FIRMWARE_UPDATE, {**base, "phase": "error", "error": str(err)})
+            persistent_notification.async_create(
+                hass,
+                f"Firmware upload to {entry.title} failed: {err}. The miner was not updated.",
+                title="WhatsMiner firmware update failed",
+                notification_id=notify_id)
+            raise HomeAssistantError(str(err)) from err
+        hass.bus.async_fire(EVENT_FIRMWARE_UPDATE, {**base, "phase": "done", "sent": info["size"]})
+        _LOGGER.warning("%s accepted the firmware bundle; it applies it and reboots", entry.title)
+        persistent_notification.async_create(
+            hass,
+            (f"{entry.title} accepted the firmware bundle ({os.path.basename(path)}). The miner "
+             "applies it and reboots; expect several minutes offline. Recent WhatsMiner firmware "
+             "cannot be rolled back once applied."),
+            title="WhatsMiner firmware update sent",
+            notification_id=notify_id)
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Register domain-level services once."""
+    import voluptuous as vol  # lazy: only available inside real Home Assistant
+
+    schema = vol.Schema({
+        vol.Required("path"): str,
+        vol.Optional("entry_id"): str,
+    })
+
+    async def _update_firmware_handler(call) -> None:
+        await _async_update_firmware(hass, call)
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_UPDATE_FIRMWARE, _update_firmware_handler,
+        schema=schema)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

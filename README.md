@@ -26,6 +26,7 @@ All temperatures are in °F.
 - **Freeze guard**: blocks or reverses stops when the miner's outdoor coolant loop is at freeze risk (details below)
 - **Probe-loss fallback**: if the supply probe drops out, the loop runs open-loop on an outdoor-reset curve (power_max at/below 10°F, power_min at/above 60°F, linear between) instead of dropping to power_min. Control Mode shows `fallback`.
 - **Auto-recovery from mining shutoffs**: on any mining on/off transition the PID clears its integrator and throttle clock and re-seeds bumpless transfer from the current wattage.
+- **Service**: `whatsminer.update_firmware` flashes an official firmware bundle over API v3 (details below; the miner applies it and reboots itself)
 - **Braiins Pool sensors** (optional, read-only token): account hashrate (5m/1h/24h), workers online/offline, reward today, estimated reward, balance, all-time reward, plus this miner's worker hashrate, state, last share and shares (details below)
 
 ## Installation via HACS
@@ -41,6 +42,26 @@ All temperatures are in °F.
 1. Copy the `custom_components/whatsminer` folder into your HA `custom_components` directory
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
+
+## 1.12.0: firmware updates from a service call
+
+New service **`whatsminer.update_firmware`** uploads an official `whatsminer-all-*.bin` to the miner over API v3 (`set.system.update_firmware`, port 4433, super password — the same flow the vendor tool's web API uses). The miner validates the bundle, applies it and reboots itself.
+
+```yaml
+service: whatsminer.update_firmware
+data:
+  path: /config/whatsminer-all-20260908.12.bin
+  # entry_id: ...   # only needed with more than one miner configured
+```
+
+- **Preflight validation before any packet is sent**: container magic and header CRC, sub-image table bounds, sub-image magic/tag/size identities, then a SHA-256 is logged. Anything that isn't an intact official bundle is refused locally. Relative `path` values resolve against the HA config directory; ~50 MB sanity cap.
+- **One update per miner at a time** (per-entry lock; a second call while one is running is refused).
+- **Observability**: every run fires `whatsminer_firmware_update` events (`start` / `progress` / `done` / `error` with byte counts and the bundle SHA prefix) and ends in a persistent notification. The token and passwords are never logged.
+
+Two honest limitations, both learned live on the M64 (2026-10-15):
+
+- A final reply of `code: 0` means *the daemon accepted the bytes*, not that the new version is running. On firmware 20250409.15.REL the daemon accepted the whole bundle, answered success, and then silently skipped applying it — the miner rebooted into the old release (factory error codes 5130–5133 were logged). Which updater builds self-select sub-images from the combined container is MicroBT's side of the fence. **Verify `fw_ver` afterwards.** If it didn't change, the fallback that worked here is the 8889 single-sub-image path (clean-room notes in `~/network/wmt-re/docs/`).
+- The miner stops mining and is offline for several minutes, and MicroBT does not support rolling back once a new release is applied. Flash only official bundles, only when the heating system can spare the downtime.
 
 ## 1.11.0: power changes without restarts (opt-in)
 

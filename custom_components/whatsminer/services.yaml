@@ -1,0 +1,10 @@
+update_firmware:
+  fields:
+    path:
+      required: true
+      selector:
+        text:
+    entry_id:
+      required: false
+      selector:
+        text:

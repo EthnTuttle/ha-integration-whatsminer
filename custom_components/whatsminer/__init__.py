@@ -252,6 +252,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "pid_kd": None,
         "outdoor_mean": None,
         "power_regulation": {},     # power command path (1.11); published by the controller
+        "external_derate": None,    # 1.14: miner derated itself under us; published by the controller
+        "proven_ceiling": {},       # 1.14: proven hold + plan cap; published by the controller
     }
     controller = WhatsminerController(hass, entry, coordinator, pid_state, config)
     await controller.async_setup()

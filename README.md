@@ -43,6 +43,15 @@ All temperatures are in °F.
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
 
+## 1.14.0: the miner can now tell us when it disagrees
+
+On 2026-10-17 the house miner raised firmware error 2320 and quietly derated itself to 1224 W — while the integration's plan believed 2649 W was running, and nothing here said otherwise. 1.14.0 closes that blind spot in three read-only layers.
+
+- **Error Code sensor** (diagnostic): v2 `get_error_code` is polled with every update (read-only, no auth, its own connection like `status`). The state is the newest firmware error code (`none` when clean); attributes carry the full `{code: raised-at}` map, a count, and the newest timestamp. A failed read keeps the last known codes rather than blanking the sensor. Each *new* (code, timestamp) pair also raises a deduped persistent notification — the firmware timestamps each occurrence, so a code that clears and returns notifies again.
+- **External-derate detection**: if the reported power limit sits more than 100 W below the last limit the integration itself commanded — sustained for ≥3 polls over ≥2 minutes, outside the 90 s post-write window, and neither an intentional stop nor (v3) a still-tuning miner — Control Mode and Mining Status set `external_derate: true` until 3 polls back at the commanded limit clear it. The comparison reference is only ever a limit we sent (restored across restarts in legacy mode); v3's telemetry adoption deliberately cannot update it, or adopting a derate would mask it.
+- **Proven ceiling** (Configure → first step, default on): any fault evidence — an error code, an external derate, a hashrate-collapse undo — arms a 7-day cap on the daily plan and the v2 ceiling-raise target: the highest power the miner has *proven* it can hold (a clean 15-minute run witnesses it) plus 250 W, or 250 W under the fault power when nothing has been witnessed yet; the effective floor wins if that sits higher. The plan's `daily_plan_reason` says `; capped by proven max NNNN W` when it clamps, and Control Mode gains `proven_max_w`, `proven_max_at`, `plan_cap`, `plan_cap_armed`. With no fault evidence (or the option off), commands are exactly what 1.13.0 would have sent.
+- **Honest limits:** the witness never expires (7 clean days disarm the cap itself); a plan computed before the fault holds until its recompute under `daily`; legacy-mode PID moves between plans are not re-clamped mid-flight.
+
 ## 1.13.0: daily plan with live PID trim (opt-in)
 
 New Control strategy **`daily_trim`** sits between `pid` and `daily`. The daily plan runs as under `daily_observe`/`daily` (once a day at the Daily plan hour, at startup when the plan is stale), but the actuation is exactly `pid` — soft start, predictive back-off, setpoint ramp, actuation gates, supply/chip caps, the 140°F lockout, the freeze guard, the demand shutoff and floor enforcement all behave as they do under `pid` — with the PID's effective output envelope intersected each tick with **[P_day − 500 W, P_day + 500 W]**.

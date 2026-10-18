@@ -281,6 +281,14 @@ AUTOTUNE_STATE_SENSOR = SensorEntityDescription(
     entity_category=EntityCategory.DIAGNOSTIC,
     icon="mdi:tune-variant",
 )
+# The firmware's own error codes (v2 get_error_code): the state is the newest
+# code, the attribute the full {code: raised-at} map. "none" when clean.
+ERROR_CODE_SENSOR = SensorEntityDescription(
+    key="error_code",
+    name="Error Code",
+    entity_category=EntityCategory.DIAGNOSTIC,
+    icon="mdi:alert-circle-outline",
+)
 
 # Braiins Pool sensors (only when a pool token is configured). Account-level
 # figures come from the profile endpoint, this miner's row from the worker
@@ -466,6 +474,7 @@ async def async_setup_entry(
     entities.append(WhatsminerControlModeSensor(coordinator, pid_state))
     entities.append(WhatsminerShutoffStateSensor(coordinator, pid_state))
     entities.append(WhatsminerAutotuneStateSensor(coordinator, pid_state))
+    entities.append(WhatsminerErrorCodeSensor(coordinator))
 
     # Braiins Pool account and worker sensors, on the miner's device.
     braiins: BraiinsPoolCoordinator | None = data.get("braiins")
@@ -723,6 +732,7 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
         floor = self._pid_state.get("power_floor") or {}
         daily = self._pid_state.get("daily_plan") or {}
         regulation = self._pid_state.get("power_regulation") or {}
+        proven = self._pid_state.get("proven_ceiling") or {}
         return {
             "supply_lockout_latched": bool(self._pid_state.get("lockout_latched")),
             "safety_engaged": bool(self._pid_state.get("safety_engaged")),
@@ -766,6 +776,11 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
             "regulated_power": regulation.get("regulated_power_w"),
             "regulated_power_established": regulation.get("established"),
             "power_regulation_error": regulation.get("v3_error"),
+            "external_derate": self._pid_state.get("external_derate"),
+            "proven_max_w": proven.get("proven_max_w"),
+            "proven_max_at": proven.get("proven_max_at"),
+            "plan_cap": proven.get("plan_cap"),
+            "plan_cap_armed": proven.get("plan_cap_armed"),
             "pid_kp": self._pid_state.get("pid_kp"),
             "pid_ki": self._pid_state.get("pid_ki"),
             "pid_kd": self._pid_state.get("pid_kd"),
@@ -845,6 +860,62 @@ class WhatsminerAutotuneStateSensor(WhatsminerControlModeSensor):
             "last_fit": tune.get("last_fit"),
             "last_reject": tune.get("last_reject"),
             "last_event": tune.get("last_event"),
+        }
+
+
+class WhatsminerErrorCodeSensor(CoordinatorEntity, SensorEntity):
+    """The firmware's own error codes, newest one as the state.
+
+    Read straight from coordinator data (v2 get_error_code); a failed read
+    keeps the last known codes, so this sensor never blanks on a transient
+    error. Diagnostic: it explains external derates and armed ceilings.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: WhatsminerCoordinator) -> None:
+        super().__init__(coordinator)
+        self.entity_description = ERROR_CODE_SENSOR
+        self._attr_unique_id = f"{coordinator.data['mac']}_error_code"
+        self._attr_name = ERROR_CODE_SENSOR.name
+
+    @property
+    def device_info(self) -> entity.DeviceInfo:
+        """Return device info."""
+        return entity.DeviceInfo(
+            identifiers={(DOMAIN, self.coordinator.data["mac"])},
+            name=self.coordinator.name,
+            manufacturer=self.coordinator.data.get("make", "Whatsminer"),
+            model=self.coordinator.data.get("model", "Unknown"),
+            sw_version=self.coordinator.data.get("fw_ver"),
+            configuration_url=f"http://{self.coordinator.data['ip']}",
+        )
+
+    def _codes(self) -> dict[str, str]:
+        codes = self.coordinator.data.get("error_codes")
+        return {str(c): str(t) for c, t in codes.items()} if isinstance(codes, dict) else {}
+
+    @staticmethod
+    def _newest(codes: dict[str, str]) -> tuple[str, str] | None:
+        # Firmware timestamps ("YYYY-MM-DD HH:MM:SS") sort lexicographically.
+        try:
+            return max(codes.items(), key=lambda kv: kv[1]) if codes else None
+        except (TypeError, ValueError):  # a malformed timestamp must not blank the sensor
+            return None
+
+    @property
+    def native_value(self) -> str:
+        newest = self._newest(self._codes())
+        return newest[0] if newest is not None else "none"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        codes = self._codes()
+        newest = self._newest(codes)
+        return {
+            "codes": codes,
+            "count": len(codes),
+            "newest_at": newest[1] if newest is not None else None,
         }
 
 

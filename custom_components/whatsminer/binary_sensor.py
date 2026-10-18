@@ -31,7 +31,7 @@ async def async_setup_entry(
     pid_state: dict = data["pid_state"]
 
     entities = [
-        WhatsminerMiningSensor(coordinator),
+        WhatsminerMiningSensor(coordinator, pid_state),
         WhatsminerPIDSafetyBinarySensor(coordinator, pid_state),
         WhatsminerDemandShutoffBinarySensor(coordinator, pid_state),
         WhatsminerFreezeGuardBinarySensor(coordinator, pid_state),
@@ -46,9 +46,10 @@ class WhatsminerMiningSensor(CoordinatorEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.RUNNING
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: WhatsminerCoordinator) -> None:
+    def __init__(self, coordinator: WhatsminerCoordinator, pid_state: dict) -> None:
         """Initialize the binary sensor."""
         super().__init__(coordinator)
+        self._pid_state = pid_state
         self._attr_unique_id = f"{coordinator.data['mac']}_is_mining"
         self._attr_name = "Mining Status"
         self._attr_icon = "mdi:pickaxe"
@@ -72,12 +73,13 @@ class WhatsminerMiningSensor(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        """The firmware's own stopped flag and which API stops/starts mining."""
+        """The firmware's own stopped flag, which API stops/starts mining, and any external derate."""
         return {
             "miner_off": self.coordinator.data.get("miner_off"),
             "miner_off_reason": self.coordinator.data.get("miner_off_reason"),
             "control_api": self.coordinator.api.control_api,
             "power_api": getattr(self.coordinator.api, "power_api", None),
+            "external_derate": self._pid_state.get("external_derate"),
         }
 
     @property

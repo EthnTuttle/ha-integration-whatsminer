@@ -73,6 +73,9 @@ DEFAULT_DATA = {
     # v3 summary up-freq-finish; polled only with Power Regulation
     # set_miner_power (None otherwise, or when the read failed).
     "up_freq_finish": None,
+    # v2 get_error_code (read-only, no auth): {code_str: "YYYY-MM-DD HH:MM:SS"}
+    # for every error the firmware currently reports; {} when clean.
+    "error_codes": {},
 }
 
 
@@ -224,6 +227,10 @@ class WhatsminerAPI:
     async def get_status(self) -> dict | None:
         """Get btminer status (mineroff flag, firmware version)."""
         return await self.send_command("status")
+
+    async def get_error_code(self) -> dict | None:
+        """Get the firmware's own error codes (read-only, no auth)."""
+        return await self.send_command("get_error_code")
 
     async def _initialize_write_access(self) -> None:
         """Initialize write access by getting token and setting up encryption.
@@ -706,6 +713,33 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
 
         return result
 
+    def _parse_error_codes(self, data: dict) -> dict:
+        """Parse get_error_code into {code_str: timestamp_str}, defensively.
+
+        Live reply (M64, 2026-10-17):
+        {"STATUS":"S","When":...,"Code":131,"Msg":{"error_code":[
+            {"2320":"2026-10-17 17:33:06"}]},"Description":""}
+        The error_code field has also been seen as a bare dict; missing Msg,
+        null and malformed entries all parse to what they can, never raise.
+        """
+        codes: dict[str, str] = {}
+        if not isinstance(data, dict):
+            return codes
+        msg = data.get("Msg")
+        if not isinstance(msg, dict):
+            return codes
+        raw = msg.get("error_code")
+        entries = raw if isinstance(raw, list) else [raw]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for code, ts in entry.items():
+                try:
+                    codes[str(code)] = str(ts)
+                except Exception:  # noqa: BLE001 — a malformed entry is skipped
+                    continue
+        return codes
+
     def _parse_pools(self, data: dict) -> dict:
         """Parse pools response to aggregate accepted/rejected share counts."""
         result = {}
@@ -794,6 +828,12 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
             status_data = await self.api.get_status()
         except Exception as err:
             status_data = err
+        # get_error_code: read-only, no auth, tiny. Its own connection after
+        # the batch, like status.
+        try:
+            error_code_data = await self.api.get_error_code()
+        except Exception as err:
+            error_code_data = err
         up_freq_finish = await self._read_up_freq_finish() if self.poll_up_freq else None
         for result in (summary_data, miner_info_data, devs_data, pools_data, status_data):
             if isinstance(result, Exception):
@@ -828,6 +868,17 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
 
             data.update(self._parse_summary(summary_data))
             data["up_freq_finish"] = up_freq_finish
+
+            if _ok(error_code_data):
+                data["error_codes"] = self._parse_error_codes(error_code_data)
+            else:
+                if isinstance(error_code_data, Exception):
+                    _LOGGER.debug(f"get_error_code to {self.miner_ip} failed: {error_code_data!r}")
+                # A failed error-code read keeps the last known codes rather
+                # than blanking the sensor on a transient error.
+                prev = (getattr(self, "data", None) or {}).get("error_codes")
+                if isinstance(prev, dict):
+                    data["error_codes"] = prev
 
             if _ok(status_data):
                 status = self._parse_status(status_data)

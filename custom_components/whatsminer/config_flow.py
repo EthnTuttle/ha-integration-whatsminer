@@ -76,6 +76,7 @@ from .const import (
     CONF_POWER_MAX,
     CONF_POWER_MIN,
     CONF_POWER_REGULATION,
+    CONF_PROVEN_CEILING,
     CONF_SUPER_PASSWORD,
     DEFAULT_CHIP_TEMP_SAFETY_CAP,
     DEFAULT_FREEZE_GUARD_FORECAST_HOURS,
@@ -120,6 +121,7 @@ from .const import (
     DEFAULT_POWER_MAX,
     DEFAULT_POWER_MIN,
     DEFAULT_POWER_REGULATION,
+    DEFAULT_PROVEN_CEILING,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SUPER_PASSWORD,
     AUTOTUNE_MODES,
@@ -293,6 +295,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_POWER_MAX,
                         default=self._current_data.get(CONF_POWER_MAX, DEFAULT_POWER_MAX),
                     ): vol.All(vol.Coerce(int), vol.Range(min=100, max=10000)),
+                    vol.Optional(
+                        CONF_PROVEN_CEILING,
+                        default=self._current_data.get(
+                            CONF_PROVEN_CEILING, DEFAULT_PROVEN_CEILING
+                        ),
+                    ): bool,
                     vol.Optional(
                         CONF_PID_TARGET_TEMP,
                         default=self._current_data.get(

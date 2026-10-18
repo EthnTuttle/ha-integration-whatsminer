@@ -579,6 +579,14 @@ class _PollAPI:
             raise self.status
         return self.status
 
+    async def get_error_code(self):
+        errors = getattr(self, "errors", None)
+        if isinstance(errors, Exception):
+            raise errors
+        if errors is None:
+            return {"STATUS": "S", "Msg": {"error_code": []}}
+        return {"STATUS": "S", "Msg": {"error_code": errors}}
+
     def note_status(self, miner_off, reason):
         self.noted.append((miner_off, reason))
 

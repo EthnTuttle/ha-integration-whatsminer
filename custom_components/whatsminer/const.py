@@ -84,6 +84,15 @@ CONF_FREEZE_GUARD_FORECAST_HOURS = "freeze_guard_forecast_hours"
 # Braiins Pool read-only web API (optional account/worker sensors)
 CONF_BRAIINS_POOL_TOKEN = "braiins_pool_token"
 CONF_BRAIINS_POOL_WORKER = "braiins_pool_worker"
+# Proven ceiling (1.14.0): once the miner itself has faulted (error code,
+# hashrate collapse undo, or a failed high hold), cap the daily plan and the
+# v2 ceiling-raise target at the highest power the miner has *proven* it can
+# hold (15 min clean), plus a margin — until 7 clean days pass. Default on:
+# the 2026-10-17 incident (firmware error 2320, self-imposed derate to 1224 W
+# while the plan believed 2649 W) is the common case for this integration's
+# audience, and re-faulting at the same ambition every day is worse than a
+# lowered plan. Purists can toggle it off.
+CONF_PROVEN_CEILING = "proven_ceiling"
 
 # Option keys dropped in config-entry version 4 (PID-only refactor). Kept so
 # async_migrate_entry can strip them from stored data/options.
@@ -227,6 +236,11 @@ POWER_REGULATION_LEGACY = "adjust_power_limit"
 POWER_REGULATION_V3 = "set_miner_power"
 POWER_REGULATION_MODES = [POWER_REGULATION_LEGACY, POWER_REGULATION_V3]
 DEFAULT_POWER_REGULATION = POWER_REGULATION_LEGACY
+# Proven ceiling (1.14.0; see CONF_PROVEN_CEILING). Default on: a
+# post-fault install re-faulting at the same ambition every day (the
+# 2026-10-17 error-2320 derate incident) is worse than opt-in purity. The
+# toggle exists for purists.
+DEFAULT_PROVEN_CEILING = True
 DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = 58.0  # °F, centred 24 h mean
 DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS = 4.0  # °F
 DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = 30

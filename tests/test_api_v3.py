@@ -644,6 +644,17 @@ def test_poll_merges_status_and_sets_the_firmware_version():
     assert data["mac"] == "aa_bb_cc_00_11_22"
 
 
+@pytest.mark.parametrize("summary,expected", [
+    ({"Msg": {}}, None),                      # fields absent entirely
+    ({"Msg": {"Target MHS": -1}}, None),      # sentinel on newer firmware
+    ({"Msg": {"Target MHS": 40_000_000}}, 40.0),
+    ({"Msg": {"Factory GHS": 40_000}}, 40.0),
+])
+def test_expected_hashrate_sentinels(summary, expected):
+    coord = coordinator_mod.WhatsminerCoordinator(None, "127.0.0.1", "admin", 4028, 30, "m64")
+    assert coord._parse_summary(summary)["expected_hashrate"] == expected
+
+
 @pytest.mark.parametrize("status", [RuntimeError("over max connect"), {"STATUS": "E", "Msg": "invalid cmd"}, None])
 def test_poll_survives_a_failed_status(status):
     coord, data = _poll(status)

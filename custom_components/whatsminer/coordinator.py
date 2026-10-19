@@ -655,14 +655,14 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         
         # Expected hashrate - try multiple field names. Absent on some
         # firmware (and never reported while the miner tunes up after a
-        # boot): show unknown rather than the DEFAULT_DATA 0, which renders
-        # as "-0.0".
+        # boot), and newer firmware carries a "-1"/0 sentinel: show unknown
+        # rather than the DEFAULT_DATA 0 or a sentinel, which renders "-0.0".
+        expected = None
         if "Target MHS" in summary:
-            result["expected_hashrate"] = summary.get("Target MHS", 0) / 1_000_000
+            expected = (summary.get("Target MHS") or 0) / 1_000_000
         elif "Factory GHS" in summary:
-            result["expected_hashrate"] = summary.get("Factory GHS", 0) / 1_000
-        else:
-            result["expected_hashrate"] = None
+            expected = (summary.get("Factory GHS") or 0) / 1_000
+        result["expected_hashrate"] = expected if expected and expected > 0 else None
         
         # Power (Whatsminer specific fields)
         result["wattage"] = summary.get("Power", 0)

@@ -64,10 +64,6 @@ CONF_PID_FALLBACK_OUTDOOR_COLD = "pid_fallback_outdoor_cold"
 CONF_PID_FALLBACK_OUTDOOR_WARM = "pid_fallback_outdoor_warm"
 # Demand shutoff (power the miner off when every thermostat is idle)
 CONF_PID_DEMAND_SHUTOFF_MODE = "pid_demand_shutoff_mode"
-CONF_PID_AUTOTUNE_MODE = "pid_autotune_mode"
-# Control strategy (1.10.0) and the local hour the daily plan is made
-CONF_CONTROL_STRATEGY = "control_strategy"
-CONF_DAILY_PLAN_HOUR = "daily_plan_hour"
 CONF_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = "pid_demand_shutoff_outdoor_min"
 CONF_PID_DEMAND_SHUTOFF_HYSTERESIS = "pid_demand_shutoff_hysteresis"
 CONF_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = "pid_demand_shutoff_idle_dwell_min"
@@ -84,16 +80,6 @@ CONF_FREEZE_GUARD_FORECAST_HOURS = "freeze_guard_forecast_hours"
 # Braiins Pool read-only web API (optional account/worker sensors)
 CONF_BRAIINS_POOL_TOKEN = "braiins_pool_token"
 CONF_BRAIINS_POOL_WORKER = "braiins_pool_worker"
-# Proven ceiling (1.14.0): once the miner itself has faulted (error code,
-# hashrate collapse undo, or a failed high hold), cap the daily plan and the
-# v2 ceiling-raise target at the highest power the miner has *proven* it can
-# hold (15 min clean), plus a margin — until 7 clean days pass. Default on:
-# the 2026-10-17 incident (firmware error 2320, self-imposed derate to 1224 W
-# while the plan believed 2649 W) is the common case for this integration's
-# audience, and re-faulting at the same ambition every day is worse than a
-# lowered plan. Purists can toggle it off.
-CONF_PROVEN_CEILING = "proven_ceiling"
-
 # Option keys dropped in config-entry version 4 (PID-only refactor). Kept so
 # async_migrate_entry can strip them from stored data/options.
 REMOVED_OPTION_KEYS_V4: tuple[str, ...] = (
@@ -102,6 +88,19 @@ REMOVED_OPTION_KEYS_V4: tuple[str, ...] = (
     "pid_demand_floor_frac",
     "pid_demand_ceiling_frac",
     "pid_demand_weight_by_error",
+)
+
+# Option keys dropped in config-entry version 5 (2.0 simplification; see
+# docs/v2.0-simplification.md). The restart-era machinery is gone: control
+# strategy and the daily plan, autotune, and the power-regulation choice
+# (set.miner.power is the only power path). Fault bounds replace the proven
+# ceiling toggle.
+REMOVED_OPTION_KEYS_V5: tuple[str, ...] = (
+    "control_strategy",
+    "daily_plan_hour",
+    "power_regulation",
+    "pid_autotune_mode",
+    "proven_ceiling",
 )
 
 # Defaults
@@ -201,46 +200,6 @@ DEFAULT_PID_FALLBACK_OUTDOOR_WARM = 60.0  # °F
 # biases toward heating (fail-warm).
 DEMAND_SHUTOFF_MODES = ["off", "observe", "active"]
 DEFAULT_PID_DEMAND_SHUTOFF_MODE = "off"
-# Self-tuning (1.9.0): off, observe (learn and publish only), active (applies
-# small, rate-limited kp/ki moves as an overlay on the configured gains).
-AUTOTUNE_MODES = ["off", "observe", "active"]
-DEFAULT_PID_AUTOTUNE_MODE = "observe"
-# Control strategy (1.10.0). Every limit change restarts btminer (minutes of
-# zero or low hashrate), and the PID with its soft start and predictive
-# back-off changed the limit ~40 times a day.
-#   pid: the closed loop, as before.
-#   daily_observe: the PID as before; the daily plan is computed and
-#     published only.
-#   daily: one power level per day from the plan, held until the next plan;
-#     no PID, soft-start or predictive changes. Safety caps, the supply
-#     lockout, the freeze guard, the demand shutoff, Mining Control and floor
-#     enforcement keep their authority.
-#   daily_trim (1.13.0): the PID, soft start and predictive back-off run as
-#     under pid, but the output envelope is intersected with
-#     [plan - DAILY_TRIM_BAND, plan + DAILY_TRIM_BAND] once a valid plan
-#     exists. The band only narrows; every cap and lockout still wins.
-CONTROL_STRATEGIES = ["pid", "daily_observe", "daily", "daily_trim"]
-# ±W around the daily plan the PID may trim within, under daily_trim.
-DAILY_TRIM_BAND = 500
-DEFAULT_CONTROL_STRATEGY = "pid"
-DEFAULT_DAILY_PLAN_HOUR = 4  # local time
-# Power regulation (1.11.0): which command carries power changes.
-#   adjust_power_limit: v2, as before. Every change restarts btminer.
-#   set_miner_power: v3 set.miner.power changes the operating power with no
-#     restart once frequency tuning is done (verified on the M64 2026-10-12).
-#     The v2 limit becomes a ceiling at power_max, sent rarely; see
-#     docs/v1.11-power-regulation-plan.md.
-# Default legacy, so an update changes nothing until it is enabled.
-CONF_POWER_REGULATION = "power_regulation"
-POWER_REGULATION_LEGACY = "adjust_power_limit"
-POWER_REGULATION_V3 = "set_miner_power"
-POWER_REGULATION_MODES = [POWER_REGULATION_LEGACY, POWER_REGULATION_V3]
-DEFAULT_POWER_REGULATION = POWER_REGULATION_LEGACY
-# Proven ceiling (1.14.0; see CONF_PROVEN_CEILING). Default on: a
-# post-fault install re-faulting at the same ambition every day (the
-# 2026-10-17 error-2320 derate incident) is worse than opt-in purity. The
-# toggle exists for purists.
-DEFAULT_PROVEN_CEILING = True
 DEFAULT_PID_DEMAND_SHUTOFF_OUTDOOR_MIN = 58.0  # °F, centred 24 h mean
 DEFAULT_PID_DEMAND_SHUTOFF_HYSTERESIS = 4.0  # °F
 DEFAULT_PID_DEMAND_SHUTOFF_IDLE_DWELL_MIN = 30
@@ -300,7 +259,5 @@ CONTROL_MODES = [
     "resuming",       # power_on sent, waiting for hashing
     "latched",        # supply lockout latched
     "idle",           # miner not mining and we did not stop it
-    "daily",          # daily strategy: holding the day's planned power
 ]
 SHUTOFF_STATES = ["disabled", "running", "dwell", "stopped", "resuming", "suppressed"]
-AUTOTUNE_STATES = ["off", "learning", "ready", "active", "evaluating", "rolled_back"]

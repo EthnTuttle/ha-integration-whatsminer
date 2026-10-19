@@ -164,10 +164,10 @@ def test_error_code_sensor_reads_none_when_clean():
 # ------------------------------------------------------------ notifications
 
 
-def test_a_new_error_code_notifies_once_and_arms_the_proven_ceiling(monkeypatch):
+def test_a_new_error_code_notifies_once_and_arms_the_fault_ceiling(monkeypatch):
     from test_controller_smoke import pn
 
-    rig = Rig(monkeypatch, **{controller_mod.CONF_CONTROL_STRATEGY: "daily"})
+    rig = Rig(monkeypatch)
 
     async def go():
         await rig.setup()
@@ -177,11 +177,16 @@ def test_a_new_error_code_notifies_once_and_arms_the_proven_ceiling(monkeypatch)
         assert keys.count("whatsminer_miner_error_2320") == 1
         _, title, message = [n for n in pn.created if n[0] == "whatsminer_miner_error_2320"][0]
         assert "2320" in title and "2026-10-17 17:33:06" in message
-        # ... and the fault armed the cap (no witness yet: fault power - 250)
+        assert "fault ceiling" in message
+        # ... and the fault armed the ceiling: no witness yet, so it caps near
+        # the power in force when it faulted (4200 W + the 250 W margin).
         assert rig.ctl._fault_reason == "error code 2320"
         assert rig.ctl._fault_power == 4200  # the limit in force when it faulted
-        assert rig.pid_state["proven_ceiling"]["plan_cap_armed"] is True
-        assert rig.pid_state["proven_ceiling"]["plan_cap"] == 3950
+        faults = rig.pid_state["faults"]
+        assert faults["fault_at"] is not None
+        assert faults["fault_power_w"] == 4200
+        assert faults["fault_reason"] == "error code 2320"
+        assert faults["ceiling_w"] == 4450
         await rig.tick()
         await rig.tick()
         assert [k for k, _, _ in pn.created].count("whatsminer_miner_error_2320") == 1  # deduped
@@ -194,7 +199,7 @@ def test_a_new_error_code_notifies_once_and_arms_the_proven_ceiling(monkeypatch)
 def test_a_new_occurrence_of_the_same_code_notifies_again(monkeypatch):
     from test_controller_smoke import pn
 
-    rig = Rig(monkeypatch, **{controller_mod.CONF_CONTROL_STRATEGY: "daily"})
+    rig = Rig(monkeypatch)
 
     async def go():
         await rig.setup()
@@ -210,7 +215,7 @@ def test_a_new_occurrence_of_the_same_code_notifies_again(monkeypatch):
 def test_a_code_that_clears_and_returns_notifies_again(monkeypatch):
     from test_controller_smoke import pn
 
-    rig = Rig(monkeypatch, **{controller_mod.CONF_CONTROL_STRATEGY: "daily"})
+    rig = Rig(monkeypatch)
 
     async def go():
         await rig.setup()

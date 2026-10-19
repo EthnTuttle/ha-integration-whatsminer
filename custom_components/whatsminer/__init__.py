@@ -31,19 +31,17 @@ from .const import (
     CONF_PID_SUPPLY_TEMP_LOCKOUT,
     CONF_PID_SUPPLY_TEMP_SAFETY_CAP,
     CONF_PID_TARGET_TEMP,
-    CONF_POWER_REGULATION,
     CONF_SUPER_PASSWORD,
     DEFAULT_PASSWORD,
     DEFAULT_PORT,
-    DEFAULT_POWER_REGULATION,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SUPER_PASSWORD,
     DOMAIN,
     EVENT_FIRMWARE_UPDATE,
     FIRMWARE_LOCKS_KEY,
     PLATFORMS,
-    POWER_REGULATION_V3,
     REMOVED_OPTION_KEYS_V4,
+    REMOVED_OPTION_KEYS_V5,
     SERVICE_UPDATE_FIRMWARE,
 )
 from .controller import WhatsminerController
@@ -184,9 +182,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         super_password = entry.options.get(CONF_SUPER_PASSWORD) or super_password
 
     _LOGGER.info(f"Setting up Whatsminer at {miner_ip}:{port}")
-    power_regulation = {**entry.data, **entry.options}.get(CONF_POWER_REGULATION, DEFAULT_POWER_REGULATION)
 
-    # Create coordinator
+    # Create coordinator. set.miner.power is the only power path (2.0), so
+    # the v3 summary's up_freq_finish gating read is always on.
     coordinator = WhatsminerCoordinator(
         hass=hass,
         ip=miner_ip,
@@ -195,7 +193,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         scan_interval=scan_interval,
         name=name,
         super_password=super_password,
-        poll_up_freq=power_regulation == POWER_REGULATION_V3,
+        poll_up_freq=True,
     )
 
     # Perform initial data fetch. If the miner doesn't answer and we have seen
@@ -245,15 +243,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "control_mode": "idle",
         "demand_shutoff": {},
         "freeze_guard": {},
-        "power_floor": {},          # learned floor; published by the controller
-        "autotune": {},             # self-tuning snapshot; published by the controller
-        "pid_kp": None,             # gains in force (configured or autotune overlay)
+        "pid_kp": None,             # gains in force (always the configured gains)
         "pid_ki": None,
         "pid_kd": None,
         "outdoor_mean": None,
-        "power_regulation": {},     # power command path (1.11); published by the controller
+        "power_command": {},        # power command path (v3 set.miner.power); published by the controller
         "external_derate": None,    # 1.14: miner derated itself under us; published by the controller
-        "proven_ceiling": {},       # 1.14: proven hold + plan cap; published by the controller
+        "faults": {},               # 2.0 fault bounds (floor from crash evidence, ceiling from fault evidence)
     }
     controller = WhatsminerController(hass, entry, coordinator, pid_state, config)
     await controller.async_setup()
@@ -357,6 +353,13 @@ _REMOVED_ENTITIES_V4: tuple[tuple[str, str], ...] = (
     ("number", "_power_limit"),
 )
 
+# Entities removed in v5 (2.0 simplification): (domain, unique_id suffix)
+_REMOVED_ENTITIES_V5: tuple[tuple[str, str], ...] = (
+    ("sensor", "_autotune_state"),
+    ("button", "_reset_autotune"),
+    ("button", "_reset_learned_floor"),
+)
+
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate Whatsminer config entries between schema versions.
@@ -370,6 +373,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     the default power limit and the demand envelope mode are gone. Their
     option keys are dropped from data and options and the orphaned entity
     registry entries are removed so they don't linger as "restored".
+
+    v4 → v5: 2.0 simplification. The control strategy, daily plan,
+    power-regulation, autotune and proven-ceiling options are dropped from
+    data and options, and the orphaned Autotune State sensor and Reset
+    Learned Floor / Reset Autotune button registry entries are removed.
     """
     _LOGGER.info(
         "Considering migration for Whatsminer entry %s (version %s)",
@@ -399,4 +407,17 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.info("Removing retired entity %s", reg_entry.entity_id)
                     registry.async_remove(reg_entry.entity_id)
         _LOGGER.info("Whatsminer entry %s migrated v3 → v4 (PID-only controller)", entry.entry_id)
+    if entry.version == 4:
+        new_data = _strip_keys(entry.data, REMOVED_OPTION_KEYS_V5)
+        new_options = _strip_keys(entry.options, REMOVED_OPTION_KEYS_V5)
+        hass.config_entries.async_update_entry(
+            entry, data=new_data, options=new_options, version=5
+        )
+        registry = er.async_get(hass)
+        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            for domain, suffix in _REMOVED_ENTITIES_V5:
+                if reg_entry.domain == domain and str(reg_entry.unique_id).endswith(suffix):
+                    _LOGGER.info("Removing retired entity %s", reg_entry.entity_id)
+                    registry.async_remove(reg_entry.entity_id)
+        _LOGGER.info("Whatsminer entry %s migrated v4 → v5 (2.0 simplification)", entry.entry_id)
     return True

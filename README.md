@@ -13,15 +13,15 @@ All temperatures are in °F.
 - **Fan sensors**: Fan Speed (RPM), when applicable
 - **Binary sensors**: Mining Status; PID Safety Engaged (a cap or lockout is clamping output); Demand Shutoff (on while the integration owns a stop); Freeze Guard (on while freeze risk blocks stops)
 - **Switch**: Mining Control. This is the manual emergency override: off stops mining and is never auto-resumed; on clears any stop the integration owns.
-- **Buttons**: Reset Supply Lockout (clears the latched 140°F supply lockout); Reset Learned Floor (forgets a learned power floor after the miner has been serviced); Reset Autotune (clears learned models and run history, returns to the configured gains)
+- **Buttons**: Reset Supply Lockout (clears the latched 140°F supply lockout); Reset Fault Memory (forgets crash/fault/derate evidence — the 7-day fault bounds — after the miner has been serviced)
 - **Number**: PID Target Temperature (setpoint, dashboard-adjustable)
-- **Control Mode sensor** (enum): `pid`, `fallback`, `demand_lockout`, `safety_cap`, `dwell`, `stopped`, `resuming`, `latched`, `idle`. Attributes carry the full shutoff and freeze-guard picture: `supply_lockout_latched`, `demand_shutoff_state`, `demand_shutoff_reason`, `demand_shutoff_blocking`, `demand_shutoff_since`, `demand_shutoff_gate`, `freeze_guard_active`, `freeze_guard_source`, `freeze_guard_value`, `power_floor_effective`, `power_floor_learned`, `power_floor_unholdable_limit`, `power_floor_proven_ok`, `restart_short_runs`, `pid_kp`, `pid_ki`, `pid_kd` (gains in force)
+- **Control Mode sensor** (enum): `pid`, `fallback`, `demand_lockout`, `safety_cap`, `dwell`, `stopped`, `resuming`, `latched`, `idle`. Attributes carry the full shutoff, freeze-guard and fault-bounds picture: `supply_lockout_latched`, `demand_shutoff_state`, `demand_shutoff_reason`, `demand_shutoff_blocking`, `demand_shutoff_since`, `demand_shutoff_gate`, `freeze_guard_active`, `freeze_guard_source`, `freeze_guard_value`, `power_floor_effective`, `power_ceiling_effective`, `crash_floor_w`, `crash_at`, `fault_at`, `fault_power_w`, `fault_reason`, `proven_max_w`, `proven_max_at`, `pid_kp`, `pid_ki`, `pid_kd` (gains in force)
 - **Demand Shutoff State sensor** (enum): `disabled`, `running`, `dwell`, `stopped`, `resuming`, `suppressed`
-- **Autotune State sensor** (enum): `off`, `learning`, `ready`, `active`, `evaluating`, `rolled_back`; attributes carry the per-zone-bucket models, suggested Kp/Ki/horizon, gains in force and the last run's scores (see Autotune)
 - **Outdoor 24h Mean sensor** (°F): the centred 24 h outdoor mean used as the warm gate
 - **PID diagnostic sensors**: Target, Error, Proportional, Integral, Derivative, Output, Requested Output, Demand Index, External Compensation, effective output bounds, PV slope
 - **PID is always on.** The power limit is driven from a **required** external supply temperature probe. There is no manual power-limit slider and no PID on/off switch. The miner's own chip temperature is deliberately not a PID input (it is noisy and the firmware already self-manages thermals); it is only a veto on output.
 - **Safety caps and lockout**: chip-temp cap, supply soft cap, latched supply lockout, demand lockout (details below)
+- **Fault bounds**: the effective floor comes from crash evidence (last uncommanded short run +250 W, fresh for 7 days) and the effective ceiling from fault evidence (demonstrated power +250 W, fresh for 7 days), so the caps converge onto what the hardware actually holds. The Reset Fault Memory button forgets it after service.
 - **Demand shutoff**: stops the miner when every thermostat is idle and heat is surplus, restarts it when a zone calls (details below)
 - **Freeze guard**: blocks or reverses stops when the miner's outdoor coolant loop is at freeze risk (details below)
 - **Probe-loss fallback**: if the supply probe drops out, the loop runs open-loop on an outdoor-reset curve (power_max at/below 10°F, power_min at/above 60°F, linear between) instead of dropping to power_min. Control Mode shows `fallback`.
@@ -42,6 +42,16 @@ All temperatures are in °F.
 1. Copy the `custom_components/whatsminer` folder into your HA `custom_components` directory
 2. Restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** and search for **Whatsminer**
+
+## 2.0.0: the restart-era machinery comes out
+
+Every layer added in 1.10–1.14 answered one enemy: the v2 `adjust_power_limit` restart cost. Since 1.11 verified v3 `set.miner.power` on this firmware, power changes are restart-free, and that machinery now only fights the loop — live, the floor-vs-proven-ceiling precedence produced a stable disagreement (1684 W commanded into a miner derated at 1224 W, forever). 2.0 cuts the controller back to one control law: PID on the supply probe, clamped between `floor(now)` and `ceiling(now)`, commanded via `set.miner.power`.
+
+- **Removed:** the Control strategy option (`pid`/`daily`/`daily_observe`/`daily_trim`), the daily plan, autotune (module, options, sensor, button), floor learning (episodes, hardware-fault flag, proven_ok), the Power Regulation option (v3 `set.miner.power` is now the only power path; `adjust_power_limit` survives only for ceiling writes and boot-window safety clamps), the proven-ceiling toggle, and the Reset Learned Floor / Reset Autotune buttons.
+- **Kept and still on:** the 140°F supply lockout latch, chip/supply safety caps, the freeze guard, the demand shutoff, firmware error-code visibility and the external-derate flag.
+- **Fault bounds** replace the learned floor and proven ceiling: the floor is Power Min, or the power of the last uncommanded crash +250 W while that evidence is fresh (7 days); the ceiling is Power Max, or the fault-proven reference +250 W while fresh. Because a derate records the power the miner derated **to**, the caps converge onto demonstrated power instead of livelocking at the refused value. The new **Reset Fault Memory** button forgets the evidence after the miner has been serviced.
+- **Config entries migrate automatically** to version 5: the removed option keys are stripped and the orphaned Autotune State / Reset Learned Floor / Reset Autotune entities are pruned from the registry.
+- **Small fix:** the Expected Hashrate sensor now shows *unknown* on firmware that reports neither `Target MHS` nor `Factory GHS`, instead of `-0.0`.
 
 ## 1.14.0: the miner can now tell us when it disagrees
 
@@ -216,9 +226,6 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | Power Max | `5000` W | Upper bound of the PID output |
 | PID Target Temperature | `167` °F | Initial setpoint (adjustable later from the number entity) |
 | Kp / Ki / Kd | `111.11` / `2.78` / `55.56` | Gains, W per °F (Kp), W per °F·s (Ki), W per °F/s (Kd) |
-| Control strategy | `pid` | `pid`: continuous PID. `daily_observe`: PID, plus the daily plan computed and published only. `daily`: hold one planned power per day, with every safety layer still active (see *1.10.0*). `daily_trim`: PID as under `pid`, but held within ±500 W of the daily plan (see *1.13.0*) |
-| Daily plan hour | `4` | Local hour (0–23) at which the daily plan is recomputed |
-| Power Regulation | `adjust_power_limit` | `adjust_power_limit`: every power change is a v2 limit change (restarts mining). `set_miner_power`: v3 `set.miner.power`, no restart once tuned; the limit becomes a ceiling at `Power Max` (see *1.11.0*) |
 
 ### Safety
 
@@ -235,7 +242,6 @@ Initial setup asks for the connection details. Everything else is in **Configure
 | External Temperature Sensor | — | **Required.** The supply probe the PID regulates. Any HA `sensor` with `device_class: temperature`. |
 | Demand Entities | `[]` | `climate` entities whose `hvac_action` indicates heating demand. Empty disables demand lockout and demand shutoff. |
 | Demand Shutoff Mode | `off` | `off`, `observe`, `active` (see Demand shutoff) |
-| PID Autotune Mode | `observe` | `off`, `observe`, `active` (see Autotune) |
 | Shutoff Outdoor Min | `58` °F | Warm gate: centred 24 h outdoor mean at/above this arms Trigger W |
 | Shutoff Hysteresis | `4` °F | Gate disarms when the mean falls below Outdoor Min minus this |
 | Idle Dwell | `30` min | All-idle time required before a Trigger W stop |

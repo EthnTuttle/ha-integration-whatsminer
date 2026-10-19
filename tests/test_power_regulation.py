@@ -1,31 +1,167 @@
-"""Power Regulation set_miner_power (1.11): v3 set.miner.power instead of restarts.
+"""Power regulation (v2.0): set.miner.power is the only power path.
 
-Live evidence (2026-10-12, M64 20250409.15.REL, API 3.0.1;
-/home/ethan/network/power-test-20261012-220429.log): set.miner.power 1250 was
-accepted and ramped 1884 -> 1244 W with no restart; up-freq-finish dropped to 0
-for the re-tune; v2 adjust_power_limit afterwards discarded the operating
-power; a derated 1905 W telemetry limit ~40 s after an uncommanded restart made
-floor enforcement send adjust_power_limit(1950), a restart mid-regulation.
+Since 1.11 verified set.miner.power on this firmware (M64 20250409.15.REL,
+API 3.0.1; /home/ethan/network/power-test-20261012-220429.log), power changes
+are restart-free: 1250 W ramped 1884 -> 1244 W with no restart. The v2 limit
+only carries the ceiling (raise once tuned, lower for reconciliation) and
+safety clamps during the boot window. What was floor learning (episodes,
+proven_ok) is now fault bounds (_bounds): a crash floor from uncommanded
+short runs, a proven-hold ceiling while fault evidence is fresh
+(docs/v2.0-simplification.md).
 
 Everything here runs against fakes; nothing reaches a real miner.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
-import json
 import pathlib
 import sys
+import types
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from test_api_v3 import SALT, FakeMiner, _PollAPI, v3  # noqa: E402
-from test_controller_smoke import MIN, Rig, Store, const, controller_mod, pn, run_async  # noqa: E402
+import ha_stubs  # noqa: E402
 
+if "homeassistant.helpers.storage" not in sys.modules:
+    # First test module loaded: install the HA stand-ins. When already present
+    # (sibling test modules imported earlier), installing again would replace
+    # the stub module objects they are bound to.
+    ha_stubs.install()
+
+PKG = pathlib.Path(__file__).resolve().parents[1] / "custom_components" / "whatsminer"
+if "wm" not in sys.modules:
+    pkg = types.ModuleType("wm")
+    pkg.__path__ = [str(PKG)]
+    sys.modules["wm"] = pkg
+
+from test_api_v3 import SALT, FakeMiner, _PollAPI, v3  # noqa: E402
+
+controller_mod = importlib.import_module("wm.controller")
 coordinator_mod = importlib.import_module("wm.coordinator")
+const = importlib.import_module("wm.const")
+ds = importlib.import_module("wm.demand_shutoff")
+# Bind the stub objects the controller itself holds, whatever order the test
+# modules were imported in.
+pn = controller_mod.persistent_notification
+Store = controller_mod.Store
 C = controller_mod
-V3 = {const.CONF_POWER_REGULATION: const.POWER_REGULATION_V3}
+
+T0 = 1_700_000_000.0
+MIN = 60.0
+THERMOSTATS = ["climate.den", "climate.great_room", "climate.back_bedroom", "climate.windowed_bedroom"]
 KEY = "whatsminer.e1.controller"
+
+
+class Clock:
+    def __init__(self, t=T0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def base_config(**over):
+    cfg = {
+        const.CONF_EXTERNAL_TEMP_SENSOR: "sensor.supply",
+        const.CONF_PID_WEATHER_ENTITY: "weather.home",
+        const.CONF_PID_DEMAND_ENTITIES: THERMOSTATS,
+        const.CONF_PID_DEMAND_SHUTOFF_MODE: "active",
+        const.CONF_PID_TARGET_TEMP: 104.0,
+        const.CONF_PID_MIN_ADJUST_INTERVAL: 0,
+        const.CONF_PID_MIN_ADJUST_INTERVAL_INCREASE: 0,
+    }
+    cfg.update(over)
+    return cfg
+
+
+class Rig:
+    """A controller plus the fakes around it (self-contained copy of the smoke harness)."""
+
+    def __init__(self, monkeypatch, **cfg_over):
+        Store.saved.clear()
+        pn.created.clear()
+        pn.dismissed.clear()
+        sys.modules["homeassistant.helpers.event"].timers.clear()
+        self.clock = Clock()
+        monkeypatch.setattr(controller_mod, "time", self.clock)
+        self.hass = ha_stubs.FakeHass()
+        self.coord = ha_stubs.FakeCoordinator()
+        self.pid_state = {"target": 104.0}
+        entry = types.SimpleNamespace(entry_id="e1")
+        self.ctl = controller_mod.WhatsminerController(
+            self.hass, entry, self.coord, self.pid_state, base_config(**cfg_over)
+        )
+        self.set_supply(100.0)
+        self.set_weather(55.0, forecast_temps=[55.0] * 24)
+        self.set_thermostats("heating")
+
+    # --- environment knobs ---------------------------------------------------
+    def set_supply(self, value):
+        if value is None:
+            self.hass.states.items["sensor.supply"] = ha_stubs.FakeState("unavailable")
+        else:
+            self.hass.states.items["sensor.supply"] = ha_stubs.FakeState(
+                str(value), {"unit_of_measurement": "°F"}, now=self.clock.t
+            )
+
+    def set_weather(self, temp, forecast_temps):
+        self.hass.states.items["weather.home"] = ha_stubs.FakeState(
+            "sunny", {"temperature": temp, "temperature_unit": "°F"}, now=self.clock.t
+        )
+        from datetime import datetime, timezone
+
+        self.hass.services.forecast = [
+            {
+                "datetime": datetime.fromtimestamp(self.clock.t + 3600 * (i + 1), tz=timezone.utc).isoformat(),
+                "temperature": t,
+            }
+            for i, t in enumerate(forecast_temps)
+        ]
+        self.ctl._forecast_cache_time = None  # force refetch
+
+    def set_thermostats(self, action, mode="heat", cur=69.5, sp=70.0, age=10.0, ids=None):
+        for eid in ids or THERMOSTATS:
+            self.hass.states.items[eid] = ha_stubs.FakeState(
+                mode,
+                {"hvac_action": action, "current_temperature": cur, "temperature": sp},
+                age_s=age,
+                now=self.clock.t,
+            )
+
+    def mining(self, on: bool, limit=None):
+        self.coord.data["is_mining"] = on
+        if limit is not None:
+            self.coord.data["wattage_limit"] = limit
+
+    # --- driving -----------------------------------------------------------------
+    async def setup(self):
+        await self.ctl.async_setup()
+
+    async def tick(self, advance_s=30.0):
+        self.clock.t += advance_s
+        for eid in THERMOSTATS:
+            st = self.hass.states.items.get(eid)
+            if st is not None and st.state != "unavailable":
+                self.set_thermostats(st.attributes["hvac_action"], st.state, st.attributes["current_temperature"],
+                                     st.attributes["temperature"], 10.0, [eid])
+        self.ctl._handle_coordinator_update()
+        await asyncio.gather(*self.hass.tasks)
+        self.hass.tasks.clear()
+
+    async def run(self, minutes, step_s=30.0):
+        n = int(minutes * MIN / step_s)
+        for _ in range(n):
+            await self.tick(step_s)
+
+    @property
+    def calls(self):
+        return self.coord.api.calls
+
+
+def run_async(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
 
 
 # ------------------------------------------------------------- v3 client
@@ -141,11 +277,11 @@ def _poll_with(value, poll_up_freq):
     return coord, run_async(coord._async_update_data())
 
 
-def test_poll_reads_up_freq_finish_only_with_set_miner_power():
+def test_poll_reads_up_freq_finish_once_per_poll():
     coord, data = _poll_with(1, poll_up_freq=True)
     assert data["up_freq_finish"] == 1 and coord.api.v3.reads == 1
     coord, data = _poll_with(1, poll_up_freq=False)
-    assert data["up_freq_finish"] is None and coord.api.v3.reads == 0  # legacy polls as before
+    assert data["up_freq_finish"] is None and coord.api.v3.reads == 0
 
 
 @pytest.mark.parametrize("value", [v3.WhatsminerV3Error("refused"), "x", None])
@@ -180,31 +316,18 @@ def _setup_kwargs(options):
     return seen
 
 
-def test_setup_polls_up_freq_only_when_set_miner_power_is_selected():
-    assert _setup_kwargs({})["poll_up_freq"] is False
-    assert _setup_kwargs({"power_regulation": "adjust_power_limit"})["poll_up_freq"] is False
-    assert _setup_kwargs({"power_regulation": "set_miner_power"})["poll_up_freq"] is True
+def test_setup_always_polls_up_freq_finish():
+    """v2.0: set.miner.power is the only power path, so the tuning read is unconditional."""
+    assert _setup_kwargs({})["poll_up_freq"] is True
+    # A leftover power_regulation option from an old entry changes nothing.
+    assert _setup_kwargs({"power_regulation": "adjust_power_limit"})["poll_up_freq"] is True
 
 
-def test_option_strings_match_in_strings_and_translations():
-    root = pathlib.Path(coordinator_mod.__file__).parent
-    texts = [json.loads((root / p).read_text(encoding="utf-8")) for p in ("strings.json", "translations/en.json")]
-    picks = [
-        (t["options"]["step"]["init"]["data"]["power_regulation"],
-         t["options"]["step"]["init"]["data_description"]["power_regulation"])
-        for t in texts
-    ]
-    assert picks[0] == picks[1]
-    assert "adjust_power_limit" in picks[0][1] and "set_miner_power" in picks[0][1]
-    assert const.DEFAULT_POWER_REGULATION == "adjust_power_limit"
-    assert const.POWER_REGULATION_MODES == ["adjust_power_limit", "set_miner_power"]
-
-
-# ------------------------------------------------------------ controller
+# ------------------------------------------------------- controller harness
 
 
 def v3_rig(monkeypatch, store=None, up=1, **over):
-    rig = Rig(monkeypatch, **{**V3, **over})
+    rig = Rig(monkeypatch, **over)
     if store:
         Store.saved[KEY] = dict(store)
     rig.coord.data.update({"up_freq_finish": up, "wattage": 3000, "hashrate_5s": 90.0})
@@ -230,25 +353,12 @@ async def restart(rig, limit, up=0):
     await rig.tick()
 
 
-def test_legacy_default_never_sends_set_miner_power(monkeypatch):
-    rig = Rig(monkeypatch)
-    rig.coord.data["up_freq_finish"] = 1
-
-    async def go():
-        await rig.setup()
-        rig.set_supply(110.0)
-        await rig.run(10)
-        assert cmds(rig, "set_power_limit")
-        assert cmds(rig, "set_miner_power") == []
-        reg = rig.pid_state["power_regulation"]
-        assert reg["mode"] == "adjust_power_limit" and reg["tuned"] is None
-
-    run_async(go())
+# ------------------------------------------------------------ v3 happy path
 
 
-def test_tuned_change_within_the_limit_goes_out_as_set_miner_power(monkeypatch):
+def test_tuned_change_goes_out_as_set_miner_power(monkeypatch):
     rig = v3_rig(monkeypatch)
-    rig.set_supply(110.0)  # above target: the PID wants less than the 4200 W limit
+    rig.set_supply(104.0)  # on target: only the seed correction goes out, then steady
 
     async def go():
         await rig.setup()
@@ -257,11 +367,23 @@ def test_tuned_change_within_the_limit_goes_out_as_set_miner_power(monkeypatch):
         (sent,) = cmds(rig, "set_miner_power")
         assert sent < 4200
         assert rig.ctl._pending_restart_at is None  # not a restart: not attributed as ours
-        reg = rig.pid_state["power_regulation"]
-        assert reg["path"] == "v3" and reg["regulated_power_w"] == sent and reg["established"] is True
+        assert rig.ctl._op_target == sent and rig.ctl._op_in_force == sent
+        assert rig.ctl._op_established is True
+        reg = rig.pid_state["power_command"]
+        # Right after our own write the poll can't prove tuning finished (grace).
+        assert reg["tuned"] is False and reg["regulated_power_w"] == sent and reg["established"] is True
+        assert reg["limit_w"] == 4200 and reg["v3_error"] is None
+        assert reg["last_command"] == f"set.miner.power {sent} W (regulate)"
+        assert rig.coord.api.power_api == "v3"
         assert Store.saved[KEY]["regulated_power_w"] == sent
+        await rig.run(2)  # past V3_TUNE_GRACE_S
+        assert rig.pid_state["power_command"]["tuned"] is True
+        assert cmds(rig, "set_miner_power") == [sent]  # nothing further goes out
 
     run_async(go())
+
+
+# -------------------------------------------------------- not-tuned hold
 
 
 def test_no_step_while_tuning_then_the_held_power_goes_out_once(monkeypatch):
@@ -279,7 +401,8 @@ def test_no_step_while_tuning_then_the_held_power_goes_out_once(monkeypatch):
         assert cmds(rig, "set_miner_power") == first  # nothing while up-freq-finish is 0
         held = rig.ctl._op_target
         assert held < first[0] and rig.ctl._op_established is False
-        assert rig.pid_state["power_regulation"]["tuned"] is False
+        assert rig.pid_state["power_command"]["tuned"] is False
+        assert rig.ctl._op_in_force == first[0]  # only the target moved
         tune(rig, 1)
         await rig.tick()
         assert cmds(rig, "set_miner_power") == first + [rig.ctl._op_target]
@@ -307,6 +430,7 @@ def test_a_stale_tuned_reading_right_after_our_write_is_not_trusted(monkeypatch)
 
 
 def test_supply_cap_keeps_the_limit_clamp_while_tuning(monkeypatch):
+    """Safety during the boot window uses adjust_power_limit: set.miner.power applies next boot."""
     rig = v3_rig(monkeypatch, up=0)
 
     async def go():
@@ -372,7 +496,10 @@ def test_ceiling_is_raised_once_for_an_increase_and_the_wanted_power_follows_the
         wanted = rig.ctl._op_target
         assert 1950 < wanted < 5000
         assert rig.ctl._op_established is False
-        assert rig.pid_state["power_regulation"]["ceiling_in_force"] is True
+        assert rig.ctl._op_in_force == 5000  # the restart discarded the operating power
+        reg = rig.pid_state["power_command"]
+        assert reg["limit_w"] == 5000 and reg["regulated_power_w"] == wanted
+        assert reg["last_command"] == "adjust_power_limit 5000 W (ceiling)"
         before = len(cmds(rig, "set_miner_power"))
         await restart(rig, limit=5000, up=0)  # the ceiling's own restart; tunes toward 5000
         await rig.run(15)
@@ -402,7 +529,7 @@ def test_ceiling_is_not_raised_when_the_loop_cannot_take_a_boot_at_power_max(mon
         elif why == "hot":
             rig.ctl._supply_hot_at = now
         elif why == "idle":
-            rig.ctl._demand_summary = C.ds.ALL_IDLE
+            rig.ctl._demand_summary = ds.ALL_IDLE
         elif why == "caps":
             caps = frozenset({"chip"})
         elif why == "backed_off":
@@ -411,14 +538,12 @@ def test_ceiling_is_not_raised_when_the_loop_cannot_take_a_boot_at_power_max(mon
             rig.ctl._ceiling_hold_until = now + 60
         assert rig.ctl._ceiling_ok(now, caps, 104.0) is not None
         await rig.ctl._command_power(2400, caps=caps, temp=104.0)
-        assert rig.calls == [("set_power_limit", 2400)]  # the increase, as legacy sends it
+        assert rig.calls == [("set_power_limit", 2400)]  # the increase goes out as the limit itself
 
     run_async(go())
 
 
-
-@pytest.mark.parametrize("kind", ["safety", "floor_fire"])
-def test_a_clamp_or_floor_enforcement_above_a_lower_limit_never_raises_the_ceiling(monkeypatch, kind):
+def test_a_safety_clamp_above_a_lower_limit_never_raises_the_ceiling(monkeypatch):
     rig = v3_rig(monkeypatch, store={"power_limit_w": 1000, "regulated_power_w": 1000})
     rig.mining(True, limit=1000)
 
@@ -426,10 +551,12 @@ def test_a_clamp_or_floor_enforcement_above_a_lower_limit_never_raises_the_ceili
         await rig.setup()
         rig.calls.clear()
         assert rig.ctl._ceiling_ok(rig.clock.t, frozenset(), 104.0) is None
-        await rig.ctl._command_power(1950, **{kind: True}, temp=104.0)
-        assert rig.calls == [("set_power_limit", 1950)]
+        await rig.ctl._command_power(1950, safety=True, temp=104.0)
+        assert rig.calls == [("set_power_limit", 1950)]  # the clamp itself, not Power Max
+        assert rig.ctl._op_target == 1950
 
     run_async(go())
+
 
 def test_lowered_power_max_lowers_the_ceiling_once(monkeypatch):
     rig = v3_rig(
@@ -444,6 +571,33 @@ def test_lowered_power_max_lowers_the_ceiling_once(monkeypatch):
         await rig.run(5)
         assert cmds(rig, "set_power_limit") == [3500]
         assert rig.ctl._op_target == 2500  # still the wanted power, re-commanded after the tune
+
+    run_async(go())
+
+
+def test_an_armed_fault_ceiling_lowers_the_limit_once_tuned(monkeypatch):
+    """Fault evidence caps what every boot may tune toward: lower the ceiling, once."""
+    rig = v3_rig(monkeypatch)
+    Store.saved[KEY] = {
+        "power_limit_w": 5000, "regulated_power_w": 2200,
+        "fault_at": rig.clock.t, "fault_power": 1224,
+        "fault_reason": "external derate to 1224W (commanded 5000W)",
+        "proven_max": 2200, "proven_max_at": rig.clock.t,
+    }
+    rig.mining(True, limit=5000)
+    rig.coord.data["wattage"] = 2200
+    rig.set_supply(104.0)
+
+    async def go():
+        await rig.setup()
+        floor, ceiling = rig.ctl._bounds(rig.clock.t)
+        assert ceiling == 2200 + C.PROVEN_MARGIN_W  # the witnessed hold plus margin
+        await rig.run(5)
+        assert cmds(rig, "set_power_limit") == [ceiling]  # exactly one deliberate restart
+        assert ("set_miner_power", 2200) in rig.calls  # the wanted power follows once tuned
+        assert rig.ctl._op_target == 2200
+        faults = rig.pid_state["faults"]
+        assert faults["ceiling_w"] == ceiling and faults["proven_max_w"] == 2200
 
     run_async(go())
 
@@ -473,8 +627,10 @@ def test_rejection_falls_back_to_adjust_power_limit_resets_and_retries_v3_later(
         assert rig.ctl._op_established is True
         assert "whatsminer_power_fallback" in [k for k, _, _ in pn.created]
         assert rig.coord.api.power_api == "v2_fallback"
-        reg = rig.pid_state["power_regulation"]
-        assert reg["path"] == "v2_fallback" and "code -1" in reg["v3_error"] and reg["v3_retry_at"]
+        assert rig.ctl._v3_retry_at == rig.clock.t + C.V3_POWER_RETRY_S  # 30 min backoff
+        reg = rig.pid_state["power_command"]
+        assert "code -1" in reg["v3_error"] and reg["v3_retry_at"]
+        assert reg["last_command"] == "adjust_power_limit 3000 W (fallback)"
         await rig.ctl._command_power(2800)  # inside the retry window: straight to the limit
         assert attempts == [3000] and cmds(rig, "set_power_limit") == [3000, 2800]
         rig.clock.t += C.V3_POWER_RETRY_S
@@ -483,6 +639,7 @@ def test_rejection_falls_back_to_adjust_power_limit_resets_and_retries_v3_later(
         assert attempts == [3000, 2600] and cmds(rig, "set_miner_power") == [2600]
         assert "whatsminer_power_fallback" in pn.dismissed
         assert rig.coord.api.power_api == "v3"
+        assert rig.ctl._v3_error is None
 
     run_async(go())
 
@@ -499,6 +656,8 @@ def test_transport_failures_fall_back_after_three_in_a_row(monkeypatch):
         assert rig.calls == []  # retried, not yet a restart
         await rig.ctl._command_power(2800)
         assert rig.calls == [("set_power_limit", 2800)]
+        assert rig.ctl._v3_retry_at > rig.clock.t
+        assert "whatsminer_power_fallback" in [k for k, _, _ in pn.created]
 
     run_async(go())
 
@@ -565,13 +724,9 @@ def test_re_establishing_at_or_above_the_limit_sends_nothing(monkeypatch):
     run_async(go())
 
 
-def test_a_transient_derated_limit_does_not_trigger_floor_enforcement(monkeypatch):
-    """2026-10-12: 1905 W reported ~40 s after an uncommanded restart, floor 1950 W."""
-    rig = v3_rig(
-        monkeypatch,
-        store={"power_limit_w": 5000, "regulated_power_w": 2000, "floor_learned": 1950},
-        **{const.CONF_POWER_MIN: 1200},
-    )
+def test_a_transient_derated_limit_is_never_adopted(monkeypatch):
+    """2026-10-12: 1905 W reported ~40 s after an uncommanded restart must not stick."""
+    rig = v3_rig(monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 2000})
     rig.mining(True, limit=5000)
     rig.coord.data["wattage"] = 2000
     rig.set_supply(104.0)
@@ -592,27 +747,9 @@ def test_a_transient_derated_limit_does_not_trigger_floor_enforcement(monkeypatc
             rig.mining(True, limit=1905)
             rig.coord.data["uptime"] = up
             await rig.tick()
-        assert cmds(rig, "set_power_limit") == []  # no adjust_power_limit(1950) stomp
-        assert rig.ctl._limit_w == 5000
-
-    run_async(go())
-
-
-def test_unknown_limit_enforces_the_floor_on_a_booting_miner_only_once_it_persists(monkeypatch):
-    rig = v3_rig(monkeypatch, store={"floor_learned": 1950}, **{const.CONF_POWER_MIN: 1200})
-    rig.mining(False, limit=1700)
-    rig.set_supply(104.0)
-
-    async def go():
-        await rig.setup()
-        for up in (20, 50, 80, 110):  # inside the boot transient
-            rig.coord.data["uptime"] = up
-            await rig.tick()
-        assert rig.calls == []
-        for up in (140, 170):
-            rig.coord.data["uptime"] = up
-            await rig.tick()
-        assert cmds(rig, "set_power_limit") == [1950]
+        assert rig.ctl._limit_w == 5000  # neither adopted nor answered
+        assert rig.ctl._external_derate is False
+        assert cmds(rig, "set_power_limit") == []
 
     run_async(go())
 
@@ -639,7 +776,27 @@ def test_reported_limit_is_adopted_only_after_it_persists(monkeypatch):
     run_async(go())
 
 
-# ------------------------------------------------------- the floor learner
+def test_a_reported_limit_equal_to_the_regulated_power_is_not_adopted(monkeypatch):
+    rig = v3_rig(monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 2000})
+    rig.mining(True, limit=5000)
+    rig.set_supply(104.0)
+
+    async def go():
+        await rig.setup()
+        await rig.tick()
+        assert cmds(rig, "set_miner_power") == [2000]
+        rig.mining(True, limit=2000)  # as if the v2 field mirrored the operating power
+        await rig.run(5)
+        assert rig.ctl._limit_w == 5000
+
+    run_async(go())
+
+
+# ------------------------------------------------------------- crash floor
+
+# Replaces floor learning (1.12-1.14): an uncommanded short run now raises the
+# fault floor plus CRASH_STEP_W for FAULT_TTL_S, and a full stable run
+# witnesses a proven hold. One bounds source, in _bounds().
 
 
 async def crash_at(rig, minutes=5):
@@ -647,13 +804,14 @@ async def crash_at(rig, minutes=5):
     for _ in range(int(minutes * 2)):
         rig.coord.data["uptime"] += 30
         await rig.tick()
+    tune(rig, 0)  # a real btminer restart re-tunes: nothing is delivered mid-restart
     rig.coord.data["uptime"] = 10
     await rig.tick()
     rig.coord.data["uptime"] = 40
     await rig.tick()
 
 
-def test_short_runs_are_floor_evidence_at_the_operating_power_not_the_ceiling(monkeypatch):
+def test_an_uncommanded_short_run_raises_the_crash_floor_for_a_week(monkeypatch):
     rig = v3_rig(
         monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 1700},
         **{const.CONF_POWER_MIN: 1200},
@@ -666,44 +824,46 @@ def test_short_runs_are_floor_evidence_at_the_operating_power_not_the_ceiling(mo
         await rig.setup()
         await rig.tick()
         assert cmds(rig, "set_miner_power") == [1700]
-        await crash_at(rig)
-        assert rig.ctl._floor_short_runs == 1 and rig.ctl._floor_short_run_limit == 1700
-        await rig.run(2)  # tuned again: 1700 is re-commanded
-        assert cmds(rig, "set_miner_power") == [1700, 1700]
-        await crash_at(rig)
-        floor = rig.pid_state["power_floor"]
-        assert floor["learned"] == 1950 and floor["unholdable_limit"] == 1700
-        await rig.run(3)
-        assert cmds(rig, "set_miner_power")[-1] == 1950  # floor enforced without a restart
+        assert rig.ctl._crash_floor is None
+        await crash_at(rig)  # a five-minute run, then btminer restarts on its own
+        assert rig.ctl._crash_floor == 1700 + C.CRASH_STEP_W
+        floor_at = rig.clock.t
+        assert rig.ctl._bounds(floor_at)[0] == 1950  # crash power + 250 W
+        faults = rig.pid_state["faults"]
+        assert faults["crash_floor_w"] == 1950 and faults["floor_w"] == 1950
+        assert faults["crash_at"] is not None
+        assert "whatsminer_crash_floor" in [k for k, _, _ in pn.created]
+        assert Store.saved[KEY]["crash_floor"] == 1950
+        await rig.run(2)  # still re-tuning: nothing goes out
+        assert cmds(rig, "set_miner_power") == [1700]
+        tune(rig, 1)
+        await rig.tick()  # tuned: the floor clamps the re-establish, no restart involved
+        assert cmds(rig, "set_miner_power") == [1700, 1950]
         assert cmds(rig, "set_power_limit") == []
+        rig.clock.t += C.FAULT_TTL_S  # seven days later the evidence is stale
+        assert rig.ctl._bounds(rig.clock.t)[0] == 1200  # Power Min again
 
     run_async(go())
 
 
-def test_restarts_at_a_power_already_held_are_a_fault_not_floor_evidence(monkeypatch):
-    rig = v3_rig(monkeypatch, **{const.CONF_POWER_MIN: 1200})
-    Store.saved[KEY] = {
-        "power_limit_w": 5000, "regulated_power_w": 1950,
-        "floor_proven_ok": 1899, "floor_proven_ok_at": rig.clock.t,  # held 1899 W recently
-    }
-    rig.mining(True, limit=5000)
-    rig.coord.data.update({"uptime": 60, "wattage": 1950})
-    rig.set_supply(104.0)
+def test_the_crash_floor_is_clamped_at_power_max(monkeypatch):
+    rig = v3_rig(monkeypatch, **{const.CONF_POWER_MAX: 5000})
 
     async def go():
         await rig.setup()
-        await rig.tick()
-        await crash_at(rig)
-        await rig.run(2)
-        await crash_at(rig)
-        floor = rig.pid_state["power_floor"]
-        assert floor["learned"] is None and floor["fault_short_runs"] == 2
-        assert "whatsminer_hardware_fault" in [k for k, _, _ in pn.created]
+        rig.ctl._note_crash(4900, rig.clock.t)
+        assert rig.ctl._crash_floor == 5150  # power + step is allowed to exceed names…
+        floor, ceiling = rig.ctl._bounds(rig.clock.t)
+        assert floor == 5000  # …but the bound itself clamps at Power Max
+        assert ceiling == 5000
+        rig.ctl._note_crash(4000, rig.clock.t)  # still fresh: only ever ratchets up
+        assert rig.ctl._crash_floor == 5150
 
     run_async(go())
 
 
-def test_a_power_is_proven_only_after_it_has_been_in_force_for_a_stable_run(monkeypatch):
+def test_a_stable_run_witnesses_a_proven_hold(monkeypatch):
+    """900 s+ of clean hashing at a power proves it: _proven_max; no bound moves while unarmed."""
     rig = v3_rig(monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 2200})
     rig.mining(True, limit=5000)
     rig.coord.data.update({"uptime": 5000, "wattage": 2200})
@@ -714,14 +874,57 @@ def test_a_power_is_proven_only_after_it_has_been_in_force_for_a_stable_run(monk
         await rig.tick()  # re-commands 2200 W: in force from now
         assert cmds(rig, "set_miner_power") == [2200]
         t0 = rig.clock.t
-        while rig.clock.t + 30 < t0 + C.FLOOR_STABLE_S:
+        while rig.clock.t < t0 + C.STABLE_RUN_S + 60:
             rig.coord.data["uptime"] += 30
             await rig.tick()
-        assert rig.ctl._floor_proven_ok is None  # the long Elapsed before it proves nothing
-        for _ in range(2):
-            rig.coord.data["uptime"] += 30
-            await rig.tick()
-        assert rig.ctl._floor_proven_ok == 2200
+        assert rig.ctl._proven_max is None  # a hold still in progress proves nothing
+        rig.coord.data["uptime"] = 10  # the run ends (uncommanded) after well over 15 min
+        await rig.tick()
+        assert rig.ctl._proven_max == 2200  # witnessed as the segment closed
+        assert rig.ctl._proven_max_at == rig.clock.t
+        rig.coord.data["uptime"] = 40
+        await rig.tick()
+        assert rig.ctl._crash_floor is None  # a long run is no crash even uncommanded
+        floor, ceiling = rig.ctl._bounds(rig.clock.t)
+        assert floor == 1000 and ceiling == 5000  # fault unarmed: nothing raised
+        assert "whatsminer_crash_floor" not in [k for k, _, _ in pn.created]
+
+    run_async(go())
+
+
+def test_reset_fault_memory_reopens_the_bounds(monkeypatch):
+    rig = v3_rig(monkeypatch, **{const.CONF_POWER_MIN: 1200})
+
+    async def go():
+        await rig.setup()
+        rig.ctl._note_crash(1400, rig.clock.t)  # floor 1650
+        rig.ctl._note_fault(rig.clock.t, 3800, "external derate to 3800W")  # ceiling 4050
+        assert rig.ctl._bounds(rig.clock.t) == (1650, 4050)
+        await rig.ctl.async_reset_fault_memory()
+        assert rig.ctl._bounds(rig.clock.t) == (1200, 5000)
+        assert rig.ctl._crash_floor is None and rig.ctl._fault_at is None
+        assert rig.ctl._proven_max is None
+        faults = rig.pid_state["faults"]
+        assert faults["floor_w"] == 1200 and faults["ceiling_w"] == 5000
+        assert "whatsminer_crash_floor" in pn.dismissed
+
+    run_async(go())
+
+
+def test_on_inverted_bounds_the_ceiling_wins(monkeypatch):
+    """Fault floor above the fault ceiling: protect the hardware, clamp everything low."""
+    rig = v3_rig(monkeypatch, **{const.CONF_POWER_MIN: 1200})
+
+    async def go():
+        await rig.setup()
+        rig.ctl._note_crash(1700, rig.clock.t)  # floor would be 1950
+        rig.ctl._note_fault(rig.clock.t, 1224, "error code 2320")  # ceiling 1474 < 1950
+        assert rig.ctl._bounds(rig.clock.t) == (1474, 1474)  # the ceiling wins
+        assert rig.ctl._cap_inversion_logged is True
+        rig.ctl._crash_at = None  # floor evidence expires…
+        rig.ctl._crash_floor = None
+        assert rig.ctl._bounds(rig.clock.t) == (1200, 1474)  # …the floor drops back to Power Min
+        assert rig.ctl._cap_inversion_logged is False
 
     run_async(go())
 
@@ -729,7 +932,7 @@ def test_a_power_is_proven_only_after_it_has_been_in_force_for_a_stable_run(monk
 # ------------------------------------------------------ hashrate collapse
 
 
-def test_hashrate_collapse_after_a_reduction_is_undone_and_bounds_regulation(monkeypatch):
+def test_hashrate_collapse_after_a_reduction_is_undone_and_raises_the_crash_floor(monkeypatch):
     rig = v3_rig(monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 2500})
     rig.mining(True, limit=5000)
     rig.coord.data.update({"wattage": 2500, "hashrate_5s": 100.0})
@@ -748,12 +951,17 @@ def test_hashrate_collapse_after_a_reduction_is_undone_and_bounds_regulation(mon
         assert cmds(rig, "set_power_limit") == []
         rig.coord.data.update({"hashrate_5s": 10.0})  # 5.6 TH/kW: collapsed
         await rig.run(3)
-        assert cmds(rig, "set_power_limit") == [2500]
-        assert rig.ctl._regulation_min_w == 2500 and rig.ctl._floor() == 2500
+        assert cmds(rig, "set_power_limit") == [2500]  # undone to max(prev, stepped), once
+        assert rig.ctl._crash_floor == 2050  # crash evidence at the failed 1800 W + 250 W
+        assert rig.ctl._bounds(rig.clock.t)[0] == 2050
         assert "whatsminer_power_collapse" in [k for k, _, _ in pn.created]
-        assert Store.saved[KEY]["regulation_min_w"] == 2500
-        await rig.ctl.async_reset_learned_floor()
-        assert rig.ctl._regulation_min_w is None and rig.ctl._floor() == 1000
+        assert "whatsminer_crash_floor" in [k for k, _, _ in pn.created]
+        assert rig.pid_state["faults"]["floor_w"] == 2050
+        assert Store.saved[KEY]["crash_floor"] == 2050
+        await rig.run(2)
+        assert len(rig.calls) == 3  # no churn: the undo sits above the floor it armed
+        await rig.ctl.async_reset_fault_memory()
+        assert rig.ctl._crash_floor is None and rig.ctl._bounds(rig.clock.t)[0] == 1000
         assert "whatsminer_power_collapse" in pn.dismissed
 
     run_async(go())
@@ -774,84 +982,10 @@ def test_a_miner_that_never_finishes_tuning_gets_the_wanted_power_as_its_limit(m
         assert rig.calls == []
         await rig.run(2)
         assert cmds(rig, "set_power_limit") == [2000]
+        held_at = rig.ctl._ceiling_hold_until - C.V3_CEILING_BACKOFF_S
+        assert rig.clock.t - 120 <= held_at <= rig.clock.t  # set when the timeout fired
         assert rig.ctl._ceiling_ok(rig.clock.t, frozenset(), 104.0) is not None  # held down
         await rig.run(60)
         assert cmds(rig, "set_power_limit") == [2000]  # once
-
-    run_async(go())
-
-
-# ---------------------------------------------------------- daily strategy
-
-
-def test_daily_plan_is_delivered_by_set_miner_power(monkeypatch):
-    rig = v3_rig(
-        monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 3000},
-        **{const.CONF_CONTROL_STRATEGY: "daily"},
-    )
-    rig.mining(True, limit=5000)
-    rig.coord.data["wattage"] = 3000
-    rig.set_supply(104.0)
-
-    async def go():
-        Store.saved[KEY]["daily_plan"] = {
-            "power_w": 2500, "computed_at": rig.clock.t, "next_at": rig.clock.t + 86400,
-        }
-        await rig.setup()
-        await rig.run(10)
-        assert cmds(rig, "set_power_limit") == []
-        assert cmds(rig, "set_miner_power")[-1] == 2500
-        assert rig.pid_state["control_mode"] == "daily"
-
-    run_async(go())
-
-
-# ----------------------------------------------------------------- rollback
-
-
-def test_rolling_back_puts_the_limit_back_at_the_regulated_power_once(monkeypatch):
-    rig = Rig(monkeypatch)  # adjust_power_limit again
-    Store.saved[KEY] = {"power_limit_w": 5000, "regulated_power_w": 2500}
-    rig.mining(True, limit=5000)
-    rig.set_supply(104.0)
-
-    async def go():
-        await rig.setup()
-        assert rig.ctl._seed_bumpless_transfer() == 2500  # not the 5000 W ceiling
-        await rig.tick()
-        assert cmds(rig, "set_power_limit") == [2500]
-        assert Store.saved[KEY]["regulated_power_w"] is None
-        await rig.run(10)
-        assert cmds(rig, "set_power_limit") == [2500]
-        assert cmds(rig, "set_miner_power") == []
-
-    run_async(go())
-
-
-def test_legacy_users_who_never_enabled_v3_get_no_rollback_command(monkeypatch):
-    rig = Rig(monkeypatch)
-    rig.set_supply(104.0)
-
-    async def go():
-        await rig.setup()
-        await rig.tick()
-        assert rig.ctl._rollback_power is None
-        assert Store.saved[KEY]["regulated_power_w"] is None
-
-    run_async(go())
-
-
-def test_a_reported_limit_equal_to_the_regulated_power_is_not_adopted(monkeypatch):
-    rig = v3_rig(monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 2000})
-    rig.mining(True, limit=5000)
-    rig.set_supply(104.0)
-
-    async def go():
-        await rig.setup()
-        await rig.tick()
-        assert cmds(rig, "set_miner_power") == [2000]
-        rig.mining(True, limit=2000)  # as if the v2 field mirrored the operating power
-        await rig.run(5)
-        assert rig.ctl._limit_w == 5000
 
     run_async(go())

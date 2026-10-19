@@ -44,14 +44,10 @@
           "scan_interval": "Scan Interval (seconds)",
           "power_min": "Minimum Power Limit (watts)",
           "power_max": "Maximum Power Limit (watts)",
-          "proven_ceiling": "Proven ceiling",
           "pid_target_temp": "PID Target Temperature (°F)",
           "pid_kp": "PID Kp (proportional, W/°F)",
           "pid_ki": "PID Ki (integral)",
-          "pid_kd": "PID Kd (derivative)",
-          "control_strategy": "Control strategy",
-          "daily_plan_hour": "Daily plan hour",
-          "power_regulation": "Power Regulation"
+          "pid_kd": "PID Kd (derivative)"
         },
         "data_description": {
           "password": "The API password for the miner",
@@ -59,14 +55,10 @@
           "scan_interval": "How often to poll the miner for updates (10-300 seconds)",
           "power_min": "Lowest power limit the PID controller may command",
           "power_max": "Highest power limit the PID controller may command",
-          "proven_ceiling": "Once the miner itself has faulted (firmware error code, silent derate, or hashrate collapse), cap the daily plan and ceiling raises at the highest power the miner has proven it can hold, plus a small margin, until 7 clean days pass. Turn off to always trust Maximum Power Limit.",
           "pid_target_temp": "Target temperature for the PID controller (°F)",
           "pid_kp": "Proportional gain - controls response to current error",
           "pid_ki": "Integral gain - eliminates steady-state error",
-          "pid_kd": "Derivative gain - dampens overshoot",
-          "control_strategy": "pid (default): the PID moves the limit continuously. daily_observe: PID unchanged, a once-a-day power plan is computed and published for comparison only. daily: hold the daily plan (one command a day); the PID, soft start and predictive back-off are off, while the safety caps, lockout, freeze guard, demand shutoff, Mining Control and learned floor stay active. daily_trim: the PID runs as under pid, but its output envelope is intersected with +/-500 W of the daily plan once a valid plan exists; the band only narrows, and every cap and lockout still wins.",
-          "daily_plan_hour": "Local hour (0-23) at which the daily plan is recomputed from the last 24 h and the forecast.",
-          "power_regulation": "adjust_power_limit (legacy, default): every power change is a v2 limit change, which restarts mining. set_miner_power (v3): power changes use set.miner.power with no restart once the miner has finished frequency tuning; the v2 limit is raised to Maximum Power Limit as a ceiling (one restart) when more power is needed and the loop can take a boot at that power, and safety clamps while the miner is tuning still use the limit. Switch back to adjust_power_limit to roll back."
+          "pid_kd": "Derivative gain - dampens overshoot"
         }
       },
       "safety": {
@@ -89,7 +81,6 @@
         "data": {
           "pid_demand_entities": "Demand Entities (climate devices)",
           "pid_demand_shutoff_mode": "Demand Shutoff Mode",
-          "pid_autotune_mode": "PID Autotune Mode",
           "pid_demand_shutoff_outdoor_min": "Shutoff: Warm Enough Outside (°F, 24 h mean)",
           "pid_demand_shutoff_hysteresis": "Shutoff: Outdoor Hysteresis (°F)",
           "pid_demand_shutoff_idle_dwell_min": "Shutoff: Idle Dwell (minutes)",
@@ -106,7 +97,6 @@
         "data_description": {
           "pid_demand_entities": "Climate entities to monitor for heating demand. When all are idle, power is clamped to minimum and, when demand shutoff is active, the miner is powered off. Leave empty to disable demand handling.",
           "pid_demand_shutoff_mode": "off = never power the miner off for lack of demand. observe = run the full shutoff logic and publish what it would do (in the shutoff sensors) without sending any command to the miner; use this to check the timing before trusting it. active = actually power the miner off when every thermostat is idle and power it back on when heat is wanted again.",
-          "pid_autotune_mode": "off = no self-tuning. observe (default) = treat each resume and each clean step up in power as a step test, fit a loop model per number of zones calling, score every run and publish suggested Kp/Ki and predictor horizon in the Autotune State sensor, without changing anything the controller does. active = also move Kp/Ki toward the suggestion, at most 10% per parameter per day within fixed bounds, rolling back if the next runs score worse. Your Kp/Ki above stay the baseline; Reset Autotune returns to them.",
           "pid_demand_shutoff_outdoor_min": "Only consider powering off for lack of demand when the outdoor temperature, averaged over a centred 24 hour window, is at or above this. Below it, minimum power is treated as useful heat and the miner stays on. Default 58°F.",
           "pid_demand_shutoff_hysteresis": "How far the 24 hour outdoor mean must fall below the threshold above before the warm-weather shutoff disarms again. Stops the gate from flapping when the mean hovers near the line.",
           "pid_demand_shutoff_idle_dwell_min": "How long every thermostat must stay idle, with warm weather confirmed, before the miner is powered off. A short idle gap between heating calls will not trigger a stop.",

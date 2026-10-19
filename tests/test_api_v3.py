@@ -509,7 +509,9 @@ def test_no_floor_command_while_the_firmware_reports_mineroff(monkeypatch):
 
 
 def test_run_after_v3_start_is_timed_from_the_start_not_from_elapsed(monkeypatch):
-    """Elapsed does not reset across a v3 stop/start, so it must not prove a limit."""
+    """Elapsed does not reset across a v3 stop/start, so a hold after the start
+    must be timed from the start, not from Elapsed: an actual run shorter than
+    STABLE_RUN_S witnesses no proven maximum however large Elapsed already is."""
     rig = Rig(monkeypatch)
     rig.mining(False, limit=2000)
     rig.coord.data["uptime"] = 5000
@@ -518,19 +520,45 @@ def test_run_after_v3_start_is_timed_from_the_start_not_from_elapsed(monkeypatch
         await rig.setup()
         rig.set_supply(104.0)
         await rig.tick()
+        assert rig.ctl._idle_uptime == 5000  # Elapsed at the last idle poll
+
+        # v3 start: btminer (and Elapsed) kept counting while stopped.
         rig.mining(True, limit=2000)
-        rig.coord.data["uptime"] = 5030
+        rig.coord.data["uptime"] = 5030.0
         await rig.tick()
-        assert rig.ctl._floor_proven_ok is None
-        rig.coord.data["uptime"] = 5000 + controller_mod.FLOOR_STABLE_S
+        assert rig.ctl._proven_max is None
+        assert rig.ctl._idle_uptime == 5000  # still the pre-start idle mark
+
+        # Stopping after an actual run of STABLE_RUN_S - 60 s: Elapsed now
+        # reads 5000 + 840 s ≫ STABLE_RUN_S, yet nothing is witnessed.
+        short_run = controller_mod.STABLE_RUN_S - 60
+        rig.coord.data["uptime"] = 5030 + short_run
+        await rig.tick(short_run - 30)
+        rig.mining(False, limit=2000)
+        rig.coord.data["uptime"] = 5030 + short_run + 30
         await rig.tick()
-        assert rig.ctl._floor_proven_ok == 2000
+        assert rig.ctl._proven_max is None
+        assert rig.ctl._idle_uptime == 5030 + short_run + 30  # re-marked at the idle poll
+
+        # A full stable run after the next start does witness the hold.
+        rig.mining(True, limit=2000)
+        rig.coord.data["uptime"] += 30.0
+        await rig.tick()
+        rig.coord.data["uptime"] += controller_mod.STABLE_RUN_S
+        await rig.tick(controller_mod.STABLE_RUN_S)
+        rig.mining(False, limit=2000)
+        await rig.tick()
+        assert rig.ctl._proven_max == 2000
+        assert rig.pid_state["faults"]["proven_max_w"] == 2000
 
     run_async(go())
 
 
-def test_short_run_after_a_v3_start_counts_toward_the_floor(monkeypatch):
-    """A crash 60 s after a v3 start is a short run even though Elapsed is 20000 s."""
+def test_short_run_after_a_v3_start_counts_toward_the_crash_floor(monkeypatch):
+    """A crash 60 s after a v3 start is a short run even though Elapsed is 20000 s —
+    run length is Elapsed minus the idle uptime, so it lifts the crash floor."""
+    from test_controller_smoke import pn
+
     rig = Rig(monkeypatch)
     rig.mining(False, limit=1000)
     rig.coord.data["uptime"] = 20000
@@ -539,6 +567,7 @@ def test_short_run_after_a_v3_start_counts_toward_the_floor(monkeypatch):
         await rig.setup()
         rig.set_supply(104.0)
         await rig.tick()
+        assert rig.ctl._idle_uptime == 20000
         rig.mining(True, limit=1000)
         for up in (20030, 20060, 20090):
             rig.coord.data["uptime"] = up
@@ -546,7 +575,12 @@ def test_short_run_after_a_v3_start_counts_toward_the_floor(monkeypatch):
         for up in (10, 40):  # regression, then the confirming poll
             rig.coord.data["uptime"] = up
             await rig.tick()
-        assert rig.ctl._floor_short_runs == 1
+        # run_s = 20090 - 20000 = 90 s < STABLE_RUN_S despite the huge Elapsed
+        assert rig.ctl._crash_floor == 1000 + controller_mod.CRASH_STEP_W
+        faults = rig.pid_state["faults"]
+        assert faults["crash_floor_w"] == 1250
+        assert faults["floor_w"] == 1250
+        assert any(k == "whatsminer_crash_floor" for k, _, _ in pn.created)
 
     run_async(go())
 

@@ -156,6 +156,12 @@ class Rig:
     def calls(self):
         return self.coord.api.calls
 
+    def power_calls(self):
+        """Watts of every power command, either transport (v2.0: v3 set.miner.power
+        carries regulation moves restart-free; v2 adjust_power_limit moves the
+        ceiling, or carries a clamp while the miner is tuning)."""
+        return [w for c, w in self.calls if c in ("set_power_limit", "set_miner_power")]
+
     @property
     def shutoff(self):
         return self.pid_state["demand_shutoff"]
@@ -191,11 +197,12 @@ def test_startup_seeds_and_does_not_slam(rig):
 def test_full_stop_and_resume_cycle(rig):
     async def go():
         await rig.setup()
+        rig.coord.data["up_freq_finish"] = 1  # tuned: v3 carries power changes (no restart)
         rig.arm_gate(60.0)
         rig.set_thermostats("idle")
         await rig.tick()
         assert rig.pid_state["control_mode"] in ("demand_lockout", "dwell")
-        assert ("set_power_limit", 1000) in rig.calls  # lockout clamp
+        assert rig.power_calls() == [1000]  # lockout clamp
         assert rig.shutoff["gate"] == "armed"
         rig.coord.api.calls.clear()
         await rig.run(29)
@@ -222,14 +229,17 @@ def test_full_stop_and_resume_cycle(rig):
         assert rig.shutoff["state"] == "resuming"
         resumed_at = rig.clock.t
         rig.coord.api.calls.clear()
-        # Miner comes back; boot hold prevents a limit change for 600 s
+        # Miner comes back; the boot hold keeps a ceiling move (a restart) out
+        # of the first 600 s. The demand-lockout target held over the stop is
+        # re-commanded restart-free by v3 as soon as the miner reports mining.
         rig.mining(True, limit=4200)
         while rig.clock.t < resumed_at + 9 * MIN:
             await rig.tick()
         assert rig.shutoff["state"] == "running"
         assert all(c != "set_power_limit" for c, _ in rig.calls), rig.calls
+        assert all(w <= 1000 for w in rig.power_calls()), rig.calls
         await rig.run(2)
-        assert any(c == "set_power_limit" for c, _ in rig.calls)
+        assert any(w > 1000 for w in rig.power_calls()), rig.calls
 
     run_async(go())
 
@@ -435,12 +445,13 @@ def test_restart_restores_owned_stop_and_resumes(monkeypatch):
 def test_probe_lost_runs_fallback_and_s_trigger_inactive(rig):
     async def go():
         await rig.setup()
+        rig.coord.data["up_freq_finish"] = 1  # tuned: v3 carries the fallback command
         rig.set_supply(None)
         rig.set_weather(30.0, [30.0] * 24)
         await rig.tick()
         assert rig.pid_state["control_mode"] == "fallback"
-        limits = [w for c, w in rig.calls if c == "set_power_limit"]
-        assert limits and limits[-1] == 3400  # 30°F on a 10..60°F curve → 60% of range
+        # 30°F on a 10..60°F curve → 60% of the 1000..5000 W fault bounds
+        assert rig.power_calls() and rig.power_calls()[-1] == 3400, rig.calls
         assert rig.shutoff["state"] == "running"
 
     run_async(go())
@@ -599,15 +610,22 @@ def test_timer_tick_before_first_coordinator_callback_seeds_first(monkeypatch):
     rig = Rig(monkeypatch)
     rig.mining(True, limit=4200)
     rig.coord.data["uptime"] = 86400
+    rig.coord.data["wattage"] = 4200  # the draw the seed uses with no command on record
 
     async def go():
         await rig.setup()
         rig.set_supply(82.0)  # 22°F below target: Kp·error alone is ~2440 W
         await rig.timer_tick()
         assert rig.calls == [], rig.calls
-        assert abs(rig.pid_state["requested_output"] - 4200) <= 5  # seeded to the running limit
-        await rig.tick()
-        assert all(w >= 4200 for c, w in rig.calls if c == "set_power_limit"), rig.calls
+        assert abs(rig.pid_state["requested_output"] - 4200) <= 5  # seeded to the running power
+        # When it does actuate (cold loop: only upward, and not below the
+        # power the miner was already running at).
+        for _ in range(10):
+            await rig.tick()
+            if rig.calls:
+                break
+        assert rig.power_calls(), rig.calls
+        assert all(w >= 4200 for w in rig.power_calls()), rig.calls
 
     run_async(go())
 
@@ -615,7 +633,12 @@ def test_timer_tick_before_first_coordinator_callback_seeds_first(monkeypatch):
 def test_restart_from_own_limit_change_keeps_adjust_interval(monkeypatch):
     """Regression (2026-10-07): the stop edge of the restart each limit change causes
     zeroed the throttle clock, so a 1800 s min_adjust_interval still actuated every
-    ~630 s (boot hold + one tick) and the loop cycled 2000 ↔ 4200 W."""
+    ~630 s (boot hold + one tick) and the loop cycled 2000 ↔ 4200 W.
+
+    v2.0: the raise above the limit in force still goes out as a restart-bearing
+    adjust_power_limit; the later decrease is a restart-free set.miner.power,
+    but the throttle clock applies to it all the same.
+    """
     rig = Rig(
         monkeypatch,
         **{
@@ -626,6 +649,8 @@ def test_restart_from_own_limit_change_keeps_adjust_interval(monkeypatch):
     )
     rig.mining(True, limit=3000)
     rig.coord.data["uptime"] = 86400
+    rig.coord.data["wattage"] = 3000  # the draw the seed uses with no command on record
+    rig.coord.data["up_freq_finish"] = 1  # tuned: v3 carries in-limit power moves
 
     async def go():
         await rig.setup()
@@ -635,23 +660,26 @@ def test_restart_from_own_limit_change_keeps_adjust_interval(monkeypatch):
             await rig.tick()
             if rig.calls:
                 break
-        limits = [(c, w) for c, w in rig.calls if c == "set_power_limit"]
-        assert len(limits) == 1, rig.calls
+        cmds = [(c, w) for c, w in rig.calls if c in ("set_power_limit", "set_miner_power")]
+        assert len(cmds) == 1, rig.calls
+        assert cmds[0][0] == "set_power_limit" and cmds[0][1] > 3000, rig.calls  # one restart up
         first_at = rig.clock.t
 
         # The restart that limit change causes: one poll not mining, then booting.
         rig.mining(False, limit=0)
         rig.coord.data["uptime"] = 0
         await rig.tick(15)
-        rig.mining(True, limit=limits[0][1])
+        rig.mining(True, limit=cmds[0][1])
         await rig.tick(15)
 
         rig.set_supply(115.0)  # now far above target: the PID wants less power
         while rig.clock.t - first_at < 1800 - 30:
             await rig.tick()
             rig.coord.data["uptime"] = rig.coord.data.get("uptime", 0) + 30
-        assert len([1 for c, _ in rig.calls if c == "set_power_limit"]) == 1, rig.calls
+        n = len([1 for c, _ in rig.calls if c in ("set_power_limit", "set_miner_power")])
+        assert n == 1, rig.calls
         await rig.run(2)
-        assert len([1 for c, _ in rig.calls if c == "set_power_limit"]) == 2, rig.calls
+        n = len([1 for c, _ in rig.calls if c in ("set_power_limit", "set_miner_power")])
+        assert n == 2, rig.calls
 
     run_async(go())

@@ -25,7 +25,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .braiins import WORKER_STATES, BraiinsPoolCoordinator
 from .const import (
-    AUTOTUNE_STATES,
     CONTROL_MODES,
     DOMAIN,
     JOULES_PER_TERA_HASH,
@@ -273,14 +272,6 @@ SHUTOFF_STATE_SENSOR = SensorEntityDescription(
     entity_category=EntityCategory.DIAGNOSTIC,
     icon="mdi:power-sleep",
 )
-AUTOTUNE_STATE_SENSOR = SensorEntityDescription(
-    key="autotune_state",
-    name="Autotune State",
-    device_class=SensorDeviceClass.ENUM,
-    options=AUTOTUNE_STATES,
-    entity_category=EntityCategory.DIAGNOSTIC,
-    icon="mdi:tune-variant",
-)
 # The firmware's own error codes (v2 get_error_code): the state is the newest
 # code, the attribute the full {code: raised-at} map. "none" when clean.
 ERROR_CODE_SENSOR = SensorEntityDescription(
@@ -473,7 +464,6 @@ async def async_setup_entry(
         )
     entities.append(WhatsminerControlModeSensor(coordinator, pid_state))
     entities.append(WhatsminerShutoffStateSensor(coordinator, pid_state))
-    entities.append(WhatsminerAutotuneStateSensor(coordinator, pid_state))
     entities.append(WhatsminerErrorCodeSensor(coordinator))
 
     # Braiins Pool account and worker sensors, on the miner's device.
@@ -729,10 +719,8 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict:
         shutoff = self._pid_state.get("demand_shutoff") or {}
         freeze = self._pid_state.get("freeze_guard") or {}
-        floor = self._pid_state.get("power_floor") or {}
-        daily = self._pid_state.get("daily_plan") or {}
-        regulation = self._pid_state.get("power_regulation") or {}
-        proven = self._pid_state.get("proven_ceiling") or {}
+        command = self._pid_state.get("power_command") or {}
+        faults = self._pid_state.get("faults") or {}
         return {
             "supply_lockout_latched": bool(self._pid_state.get("lockout_latched")),
             "safety_engaged": bool(self._pid_state.get("safety_engaged")),
@@ -753,38 +741,28 @@ class WhatsminerControlModeSensor(CoordinatorEntity, SensorEntity):
             "freeze_guard_value": freeze.get("value"),
             "freeze_guard_threshold": freeze.get("threshold"),
             "outdoor_24h_mean": self._pid_state.get("outdoor_mean"),
-            "power_floor_effective": floor.get("effective"),
-            "power_floor_learned": floor.get("learned"),
-            "power_floor_unholdable_limit": floor.get("unholdable_limit"),
-            "power_floor_proven_ok": floor.get("proven_ok"),
-            "power_floor_proven_ok_at": floor.get("proven_ok_at"),
-            "restart_short_runs": floor.get("short_runs"),
-            "hardware_fault_suspected": floor.get("hardware_fault_suspected"),
-            "fault_short_runs": floor.get("fault_short_runs"),
-            "floor_learning_suspended": floor.get("learning_suspended"),
-            "control_strategy": daily.get("strategy"),
-            "daily_plan_power": daily.get("power_w"),
-            "daily_plan_computed_at": daily.get("computed_at"),
-            "daily_plan_next_at": daily.get("next_at"),
-            "daily_plan_reason": daily.get("reason"),
-            "daily_trim_active": bool(daily.get("trim_active")),
-            "power_regulation": regulation.get("mode"),
-            "power_command_path": regulation.get("path"),
-            "power_last_command": regulation.get("last_command"),
-            "up_freq_finish": regulation.get("up_freq_finish"),
-            "power_limit_ceiling": regulation.get("limit_w"),
-            "regulated_power": regulation.get("regulated_power_w"),
-            "regulated_power_established": regulation.get("established"),
-            "power_regulation_error": regulation.get("v3_error"),
+            "power_floor_effective": faults.get("floor_w"),
+            "power_ceiling_effective": faults.get("ceiling_w"),
+            "crash_floor_w": faults.get("crash_floor_w"),
+            "crash_at": faults.get("crash_at"),
+            "fault_at": faults.get("fault_at"),
+            "fault_power_w": faults.get("fault_power_w"),
+            "fault_reason": faults.get("fault_reason"),
+            "proven_max_w": faults.get("proven_max_w"),
+            "proven_max_at": faults.get("proven_max_at"),
             "external_derate": self._pid_state.get("external_derate"),
-            "proven_max_w": proven.get("proven_max_w"),
-            "proven_max_at": proven.get("proven_max_at"),
-            "plan_cap": proven.get("plan_cap"),
-            "plan_cap_armed": proven.get("plan_cap_armed"),
+            "power_last_command": command.get("last_command"),
+            "up_freq_finish": command.get("up_freq_finish"),
+            "tuned": command.get("tuned"),
+            "power_limit_ceiling": command.get("limit_w"),
+            "regulated_power": command.get("regulated_power_w"),
+            "regulated_power_established": command.get("established"),
+            "power_regulation_error": command.get("v3_error"),
+            "v3_retry_at": command.get("v3_retry_at"),
+            "ceiling_held_until": command.get("ceiling_held_until"),
             "pid_kp": self._pid_state.get("pid_kp"),
             "pid_ki": self._pid_state.get("pid_ki"),
             "pid_kd": self._pid_state.get("pid_kd"),
-            "pid_gains_source": ((self._pid_state.get("autotune") or {}).get("effective") or {}).get("source"),
         }
 
 
@@ -815,51 +793,6 @@ class WhatsminerShutoffStateSensor(WhatsminerControlModeSensor):
             "trigger": shutoff.get("trigger"),
             "would_stop": shutoff.get("would_stop"),
             "would_resume": shutoff.get("would_resume"),
-        }
-
-
-class WhatsminerAutotuneStateSensor(WhatsminerControlModeSensor):
-    """Self-tuning: what it has learned, what it suggests, which gains are in force."""
-
-    def __init__(self, coordinator: WhatsminerCoordinator, pid_state: dict) -> None:
-        super().__init__(coordinator, pid_state)
-        self.entity_description = AUTOTUNE_STATE_SENSOR
-        self._attr_unique_id = f"{coordinator.data['mac']}_autotune_state"
-        self._attr_name = AUTOTUNE_STATE_SENSOR.name
-
-    @property
-    def native_value(self):
-        state = (self._pid_state.get("autotune") or {}).get("state")
-        return state if state in AUTOTUNE_STATES else "off"
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        tune = self._pid_state.get("autotune") or {}
-        sugg = tune.get("suggested") or {}
-        eff = tune.get("effective") or {}
-        return {
-            "mode": tune.get("mode"),
-            "runs": tune.get("runs"),
-            "fits": tune.get("fits"),
-            "segments": tune.get("segments"),
-            "segment_open": tune.get("segment_open"),
-            "last_fit_at": tune.get("last_fit_at"),
-            "models": tune.get("models"),
-            "suggested_kp": sugg.get("kp"),
-            "suggested_ki": sugg.get("ki"),
-            "suggested_kd": sugg.get("kd"),
-            "suggested_horizon_min": sugg.get("horizon_min"),
-            "suggestion": sugg or None,
-            "effective_kp": eff.get("kp"),
-            "effective_ki": eff.get("ki"),
-            "effective_kd": eff.get("kd"),
-            "gains_source": eff.get("source"),
-            "configured": tune.get("configured"),
-            "overlay": tune.get("overlay"),
-            "last_run": tune.get("last_run"),
-            "last_fit": tune.get("last_fit"),
-            "last_reject": tune.get("last_reject"),
-            "last_event": tune.get("last_event"),
         }
 
 

@@ -18,6 +18,10 @@ def _mod(name: str) -> types.ModuleType:
 
 
 def install() -> None:
+    # Idempotent: a second install would replace stub module objects that
+    # earlier-collected test modules already bound, breaking those suites.
+    if "homeassistant.helpers.storage" in sys.modules:
+        return
     ha = _mod("homeassistant")
     ha.__path__ = []
 

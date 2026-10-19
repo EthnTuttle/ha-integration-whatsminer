@@ -653,11 +653,16 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         result["hashrate"] = (summary.get("MHS av") or 0) / 1_000_000
         result["hashrate_1m"] = (summary.get("MHS 1m") or 0) / 1_000_000
         
-        # Expected hashrate - try multiple field names
+        # Expected hashrate - try multiple field names. Absent on some
+        # firmware (and never reported while the miner tunes up after a
+        # boot): show unknown rather than the DEFAULT_DATA 0, which renders
+        # as "-0.0".
         if "Target MHS" in summary:
             result["expected_hashrate"] = summary.get("Target MHS", 0) / 1_000_000
         elif "Factory GHS" in summary:
             result["expected_hashrate"] = summary.get("Factory GHS", 0) / 1_000
+        else:
+            result["expected_hashrate"] = None
         
         # Power (Whatsminer specific fields)
         result["wattage"] = summary.get("Power", 0)
@@ -917,7 +922,7 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         _LOGGER.debug(
             f"Got data from {self.miner_ip}: "
             f"hashrate={data.get('hashrate', 0):.2f} TH/s, "
-            f"expected={data.get('expected_hashrate', 0):.2f} TH/s, "
+            f"expected={(data.get('expected_hashrate') or 0):.2f} TH/s, "
             f"temp={data.get('temperature_avg', 0):.1f}°F, "
             f"power={data.get('wattage', 0)}W, "
             f"limit={data.get('wattage_limit', 0)}W, "

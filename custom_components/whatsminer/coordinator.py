@@ -58,6 +58,8 @@ DEFAULT_DATA = {
     "hashrate": 0,
     "expected_hashrate": 0,
     "temperature_avg": 0,
+    # Coolant/environment temp (hydro units), °F; None until reported.
+    "env_temp": None,
     "wattage": 0,
     "wattage_limit": 0,
     "efficiency": 0.0,
@@ -675,6 +677,12 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         else:
             temp_c = summary.get("Temperature", 0)
         result["temperature_avg"] = c_to_f(temp_c) if temp_c else 0
+        # Coolant/environment temperature (hydro units). The valve/fan
+        # steering targets it; comparing it to the cooler's set point is how
+        # you see the cooler working. Displayed in °C (see the sensor's
+        # suggested unit) because miner UIs are configured in °C.
+        env_c = summary.get("Env Temp")
+        result["env_temp"] = c_to_f(env_c) if env_c else None
         
         # Calculate efficiency (J/TH = W / (TH/s))
         if result.get("wattage", 0) > 0 and result.get("hashrate", 0) > 0:

@@ -58,6 +58,16 @@ SENSOR_TYPES: dict[str, SensorEntityDescription] = {
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+    "env_temp": SensorEntityDescription(
+        key="env_temp",
+        name="Coolant Temperature",
+        native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        suggested_display_precision=1,
+        icon="mdi:coolant-temperature",
+    ),
     "wattage": SensorEntityDescription(
         key="wattage",
         name="Power Consumption",

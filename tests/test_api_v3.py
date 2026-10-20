@@ -655,6 +655,12 @@ def test_expected_hashrate_sentinels(summary, expected):
     assert coord._parse_summary(summary)["expected_hashrate"] == expected
 
 
+def test_env_temp_parsed_from_summary():
+    coord = coordinator_mod.WhatsminerCoordinator(None, "127.0.0.1", "admin", 4028, 30, "m64")
+    assert abs(coord._parse_summary({"Msg": {"Env Temp": 33.5}})["env_temp"] - 92.3) < 0.1
+    assert coord._parse_summary({"Msg": {}})["env_temp"] is None
+
+
 @pytest.mark.parametrize("status", [RuntimeError("over max connect"), {"STATUS": "E", "Msg": "invalid cmd"}, None])
 def test_poll_survives_a_failed_status(status):
     coord, data = _poll(status)

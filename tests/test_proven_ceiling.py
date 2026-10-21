@@ -177,12 +177,22 @@ def test_the_proven_timestamp_refreshes_at_most_hourly(monkeypatch):
 def test_armed_with_a_witness_caps_at_proven_plus_margin(monkeypatch):
     rig = Rig(monkeypatch)
     ctl = rig.ctl
-    ctl._proven_max, ctl._proven_max_at = 3000, rig.clock.t - 100
-    ctl._note_fault(rig.clock.t, 4200, "error code 2320")  # fault above the witness
+    ctl._note_fault(rig.clock.t, 4200, "error code 2320")
+    # Witness AFTER the fault (a clean hold it has proven since) wins.
+    ctl._proven_max, ctl._proven_max_at = 3000, rig.clock.t + 100
     assert ctl._bounds(rig.clock.t) == (1000, 3000 + MARGIN)
     faults = _faults(ctl, rig)
     assert faults["ceiling_w"] == 3250 and faults["proven_max_w"] == 3000
     assert faults["fault_power_w"] == 4200 and faults["fault_reason"] == "error code 2320"
+
+
+def test_a_stale_witness_loses_to_the_fault_power(monkeypatch):
+    # Seen before the fault: it says nothing about what the miner holds now.
+    rig = Rig(monkeypatch)
+    ctl = rig.ctl
+    ctl._proven_max, ctl._proven_max_at = 3000, rig.clock.t - 100
+    ctl._note_fault(rig.clock.t, 1224, "error code 2320")
+    assert ctl._bounds(rig.clock.t) == (1000, 1224 + MARGIN)
 
 
 def test_armed_without_a_witness_caps_at_fault_plus_margin(monkeypatch):
@@ -335,9 +345,10 @@ def test_reset_fault_memory_forgets_everything(monkeypatch):
     ctl._derate_candidate_since, ctl._derate_candidate_polls = rig.clock.t - 60, 2
     ctl._derate_match_polls = 2
     ctl._error_notify_keys.add("miner_error_2320")
-    # Armed: the witnessed hold (3000) beats the fault power, and the 3850 W
-    # crash floor inverts over the 3250 W ceiling — the ceiling wins.
-    assert ctl._bounds(rig.clock.t) == (3250, 3250)
+    # Armed: the witness (3000, pre-fault) LOSSES to the fault power (1224),
+    # and the 3850 W crash floor inverts over the 1474 W ceiling — the
+    # ceiling wins.
+    assert ctl._bounds(rig.clock.t) == (1474, 1474)
 
     async def go():
         await ctl.async_reset_fault_memory()
@@ -358,3 +369,28 @@ def test_reset_fault_memory_forgets_everything(monkeypatch):
     saved = Store.saved[KEY]
     assert saved["fault_at"] is None and saved["crash_floor"] is None
     assert saved["proven_max"] is None
+
+
+def test_crashes_inside_a_fault_episode_do_not_raise_the_floor(monkeypatch):
+    """v2.0.3: crashes during an armed fault episode are the fault's story."""
+    rig = Rig(monkeypatch)
+    ctl = rig.ctl
+    ctl._note_fault(rig.clock.t, 1800, "error code 2320")
+    reg = C._Regression(prev_uptime=1000, seen_uptime=10, ours=False, run_s=300)
+    ctl._count_restart(reg, rig.clock.t)
+    assert ctl._crash_floor is None
+    rig.clock.t += TTL + 60.0  # episode expired
+    ctl._count_restart(
+        C._Regression(prev_uptime=1000, seen_uptime=10, ours=False, run_s=300), rig.clock.t
+    )
+    # power in force in this rig is the fake's 4200 W limit
+    assert ctl._crash_floor == 4200 + C.CRASH_STEP_W
+
+
+def test_a_witness_after_the_fault_beats_it_but_a_stale_one_does_not(monkeypatch):
+    """v2.0.3 covered above; pin the boundary here on the equality edge."""
+    rig = Rig(monkeypatch)
+    ctl = rig.ctl
+    ctl._note_fault(rig.clock.t, 1224, "error code 2320")
+    ctl._proven_max, ctl._proven_max_at = 3000, rig.clock.t  # same tick = not after
+    assert ctl._bounds(rig.clock.t) == (1000, 1224 + MARGIN)

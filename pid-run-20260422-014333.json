@@ -1,0 +1,1925 @@
+{
+  "captured_at": "2026-04-22T01:43:33.277421+00:00",
+  "window": {
+    "start": "2026-04-22T00:58:33+00:00",
+    "end": "2026-04-22T01:43:33+00:00",
+    "minutes": 45
+  },
+  "miner_slug": "heatcore",
+  "external_sensor": "sensor.scout_21_temperature_probe",
+  "config_entry": {
+    "_error": "TimeoutError: timed out during opening handshake"
+  },
+  "current_states": {
+    "sensor.heatcore_power_limit": {
+      "entity_id": "sensor.heatcore_power_limit",
+      "state": "4800",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "friendly_name": "heatcore Power Limit"
+      },
+      "last_changed": "2026-04-22T01:42:29.206111+00:00",
+      "last_reported": "2026-04-22T01:43:29.196858+00:00",
+      "last_updated": "2026-04-22T01:42:29.206111+00:00",
+      "context": {
+        "id": "01KPSDMR2PX55Q0D7F5BTYTPCA",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_power_consumption": {
+      "entity_id": "sensor.heatcore_power_consumption",
+      "state": "1792.00333333333",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "friendly_name": "heatcore Power Consumption"
+      },
+      "last_changed": "2026-04-22T01:43:29.196811+00:00",
+      "last_reported": "2026-04-22T01:43:29.196811+00:00",
+      "last_updated": "2026-04-22T01:43:29.196811+00:00",
+      "context": {
+        "id": "01KPSDPJNC0KB83JDGWEBQ71BF",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_temperature": {
+      "entity_id": "sensor.heatcore_temperature",
+      "state": "113.0",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "\u00b0F",
+        "device_class": "temperature",
+        "friendly_name": "heatcore Temperature"
+      },
+      "last_changed": "2026-04-22T01:43:29.196750+00:00",
+      "last_reported": "2026-04-22T01:43:29.196750+00:00",
+      "last_updated": "2026-04-22T01:43:29.196750+00:00",
+      "context": {
+        "id": "01KPSDPJNCH8WC297CX39ZY29F",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_pid_error": {
+      "entity_id": "sensor.heatcore_pid_error",
+      "state": "53.6",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "\u00b0F",
+        "device_class": "temperature",
+        "icon": "mdi:delta",
+        "friendly_name": "heatcore PID Error"
+      },
+      "last_changed": "2026-04-22T01:42:59.213279+00:00",
+      "last_reported": "2026-04-22T01:43:29.197585+00:00",
+      "last_updated": "2026-04-22T01:42:59.213279+00:00",
+      "context": {
+        "id": "01KPSDNNCDXGFMA975JSS5S51J",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_pid_proportional": {
+      "entity_id": "sensor.heatcore_pid_proportional",
+      "state": "2400.0",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "friendly_name": "heatcore PID Proportional"
+      },
+      "last_changed": "2026-04-22T01:42:59.213320+00:00",
+      "last_reported": "2026-04-22T01:43:29.197609+00:00",
+      "last_updated": "2026-04-22T01:42:59.213320+00:00",
+      "context": {
+        "id": "01KPSDNNCDMPTEAQVR1J3TXTWR",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_pid_integral": {
+      "entity_id": "sensor.heatcore_pid_integral",
+      "state": "4752.59",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "friendly_name": "heatcore PID Integral"
+      },
+      "last_changed": "2026-04-22T01:13:59.224160+00:00",
+      "last_reported": "2026-04-22T01:28:29.216243+00:00",
+      "last_updated": "2026-04-22T01:13:59.224160+00:00",
+      "context": {
+        "id": "01KPSC0J5RQ4RXE7018GN2PT79",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_pid_derivative": {
+      "entity_id": "sensor.heatcore_pid_derivative",
+      "state": "-0.0",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "friendly_name": "heatcore PID Derivative"
+      },
+      "last_changed": "2026-04-22T01:43:29.197666+00:00",
+      "last_reported": "2026-04-22T01:43:29.197666+00:00",
+      "last_updated": "2026-04-22T01:43:29.197666+00:00",
+      "context": {
+        "id": "01KPSDPJND5SZ3S2EDYVR9MS0F",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_pid_requested_output": {
+      "entity_id": "sensor.heatcore_pid_requested_output",
+      "state": "5000",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "friendly_name": "heatcore PID Requested Output"
+      },
+      "last_changed": "2026-04-22T01:13:59.224254+00:00",
+      "last_reported": "2026-04-22T01:28:29.216325+00:00",
+      "last_updated": "2026-04-22T01:13:59.224254+00:00",
+      "context": {
+        "id": "01KPSC0J5RVNT2R3RMRK91RKZ0",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_pid_output": {
+      "entity_id": "sensor.heatcore_pid_output",
+      "state": "5000",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "W",
+        "device_class": "power",
+        "friendly_name": "heatcore PID Output"
+      },
+      "last_changed": "2026-04-22T01:42:29.206950+00:00",
+      "last_reported": "2026-04-22T01:43:29.197706+00:00",
+      "last_updated": "2026-04-22T01:42:29.206950+00:00",
+      "context": {
+        "id": "01KPSDMR2PTT7B8H2DV466XRMP",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.heatcore_pid_target_temperature": {
+      "entity_id": "sensor.heatcore_pid_target_temperature",
+      "state": "100.4",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "\u00b0F",
+        "device_class": "temperature",
+        "icon": "mdi:thermometer-lines",
+        "friendly_name": "heatcore PID Target Temperature"
+      },
+      "last_changed": "2026-04-22T01:11:29.168665+00:00",
+      "last_reported": "2026-04-22T01:28:29.216166+00:00",
+      "last_updated": "2026-04-22T01:11:29.168665+00:00",
+      "context": {
+        "id": "01KPSBVZMGC9D5CCSMNCQG888P",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "binary_sensor.heatcore_pid_safety_engaged": {
+      "entity_id": "binary_sensor.heatcore_pid_safety_engaged",
+      "state": "off",
+      "attributes": {
+        "device_class": "problem",
+        "icon": "mdi:shield-alert",
+        "friendly_name": "heatcore PID Safety Engaged"
+      },
+      "last_changed": "2026-04-22T01:10:59.223677+00:00",
+      "last_reported": "2026-04-22T01:28:29.216362+00:00",
+      "last_updated": "2026-04-22T01:10:59.223677+00:00",
+      "context": {
+        "id": "01KPSBV2CQRAA5RX2QYC6TXVWK",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "number.heatcore_pid_target_temperature": {
+      "entity_id": "number.heatcore_pid_target_temperature",
+      "state": "38.0",
+      "attributes": {
+        "min": 20,
+        "max": 100,
+        "step": 1,
+        "mode": "box",
+        "unit_of_measurement": "\u00b0C",
+        "icon": "mdi:thermometer-lines",
+        "friendly_name": "heatcore PID Target Temperature"
+      },
+      "last_changed": "2026-04-22T01:10:59.225222+00:00",
+      "last_reported": "2026-04-22T01:10:59.225222+00:00",
+      "last_updated": "2026-04-22T01:10:59.225222+00:00",
+      "context": {
+        "id": "01KPSBV2CSJRS0BME3KB6BP1Q2",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "switch.heatcore_pid_mode": {
+      "entity_id": "switch.heatcore_pid_mode",
+      "state": "on",
+      "attributes": {
+        "icon": "mdi:thermostat-auto",
+        "friendly_name": "heatcore PID Mode"
+      },
+      "last_changed": "2026-04-22T01:10:59.224322+00:00",
+      "last_reported": "2026-04-22T01:10:59.224322+00:00",
+      "last_updated": "2026-04-22T01:10:59.224322+00:00",
+      "context": {
+        "id": "01KPSBV2CRGTE8Z6VB6NFEX9WF",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "switch.heatcore_mining_control": {
+      "entity_id": "switch.heatcore_mining_control",
+      "state": "on",
+      "attributes": {
+        "icon": "mdi:power",
+        "friendly_name": "heatcore Mining Control"
+      },
+      "last_changed": "2026-04-22T01:10:59.224107+00:00",
+      "last_reported": "2026-04-22T01:28:29.216382+00:00",
+      "last_updated": "2026-04-22T01:10:59.224107+00:00",
+      "context": {
+        "id": "01KPSBV2CRDTTC2FN3KT68KDEY",
+        "parent_id": null,
+        "user_id": null
+      }
+    },
+    "sensor.scout_21_temperature_probe": {
+      "entity_id": "sensor.scout_21_temperature_probe",
+      "state": "78.8",
+      "attributes": {
+        "state_class": "measurement",
+        "unit_of_measurement": "\u00b0F",
+        "device_class": "temperature",
+        "friendly_name": "boiler-loop-hx"
+      },
+      "last_changed": "2026-04-22T01:42:00.177738+00:00",
+      "last_reported": "2026-04-22T01:42:00.177738+00:00",
+      "last_updated": "2026-04-22T01:42:00.177738+00:00",
+      "context": {
+        "id": "01KPSDKVQHCQEM18N9DHHWT80W",
+        "parent_id": null,
+        "user_id": null
+      }
+    }
+  },
+  "history": [
+    [
+      {
+        "entity_id": "sensor.heatcore_power_limit",
+        "state": "3600",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "W",
+          "device_class": "power",
+          "friendly_name": "heatcore Power Limit"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "4800",
+        "last_changed": "2026-04-22T01:00:18.271262+00:00"
+      },
+      {
+        "state": "1538",
+        "last_changed": "2026-04-22T01:11:59.172622+00:00"
+      },
+      {
+        "state": "4800",
+        "last_changed": "2026-04-22T01:42:29.206111+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_power_consumption",
+        "state": "2546.31666666667",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "W",
+          "device_class": "power",
+          "friendly_name": "heatcore Power Consumption"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "2748.92333333333",
+        "last_changed": "2026-04-22T00:58:48.362027+00:00"
+      },
+      {
+        "state": "2955.57",
+        "last_changed": "2026-04-22T00:59:18.364022+00:00"
+      },
+      {
+        "state": "3194.02666666667",
+        "last_changed": "2026-04-22T00:59:48.372067+00:00"
+      },
+      {
+        "state": "3070.42333333333",
+        "last_changed": "2026-04-22T01:00:18.271218+00:00"
+      },
+      {
+        "state": "3032.16333333333",
+        "last_changed": "2026-04-22T01:00:48.274314+00:00"
+      },
+      {
+        "state": "3150.21666666667",
+        "last_changed": "2026-04-22T01:01:18.235545+00:00"
+      },
+      {
+        "state": "3312.39",
+        "last_changed": "2026-04-22T01:01:48.212134+00:00"
+      },
+      {
+        "state": "3455.35",
+        "last_changed": "2026-04-22T01:02:18.382028+00:00"
+      },
+      {
+        "state": "3575.95",
+        "last_changed": "2026-04-22T01:02:48.401835+00:00"
+      },
+      {
+        "state": "3699.35",
+        "last_changed": "2026-04-22T01:03:18.231102+00:00"
+      },
+      {
+        "state": "3828.04333333333",
+        "last_changed": "2026-04-22T01:03:48.475637+00:00"
+      },
+      {
+        "state": "3959.37666666667",
+        "last_changed": "2026-04-22T01:04:18.214520+00:00"
+      },
+      {
+        "state": "4077.81666666667",
+        "last_changed": "2026-04-22T01:04:48.300579+00:00"
+      },
+      {
+        "state": "4480.28666666667",
+        "last_changed": "2026-04-22T01:05:18.265676+00:00"
+      },
+      {
+        "state": "4636.41333333333",
+        "last_changed": "2026-04-22T01:05:48.278785+00:00"
+      },
+      {
+        "state": "4654.98666666667",
+        "last_changed": "2026-04-22T01:06:18.294513+00:00"
+      },
+      {
+        "state": "4651.09333333333",
+        "last_changed": "2026-04-22T01:06:48.261765+00:00"
+      },
+      {
+        "state": "4666.90666666667",
+        "last_changed": "2026-04-22T01:07:18.244764+00:00"
+      },
+      {
+        "state": "4695.62666666667",
+        "last_changed": "2026-04-22T01:07:48.662976+00:00"
+      },
+      {
+        "state": "4713.12",
+        "last_changed": "2026-04-22T01:08:19.302391+00:00"
+      },
+      {
+        "state": "4719.57333333333",
+        "last_changed": "2026-04-22T01:08:49.276186+00:00"
+      },
+      {
+        "state": "4717.86666666667",
+        "last_changed": "2026-04-22T01:09:19.319426+00:00"
+      },
+      {
+        "state": "4726.4",
+        "last_changed": "2026-04-22T01:09:49.338375+00:00"
+      },
+      {
+        "state": "4735.30666666667",
+        "last_changed": "2026-04-22T01:10:19.627285+00:00"
+      },
+      {
+        "state": "4746.32",
+        "last_changed": "2026-04-22T01:10:59.216532+00:00"
+      },
+      {
+        "state": "4753.38666666667",
+        "last_changed": "2026-04-22T01:11:29.167623+00:00"
+      },
+      {
+        "state": "4345.11666666667",
+        "last_changed": "2026-04-22T01:11:59.172550+00:00"
+      },
+      {
+        "state": "3999.45666666667",
+        "last_changed": "2026-04-22T01:12:29.207622+00:00"
+      },
+      {
+        "state": "3633.27666666667",
+        "last_changed": "2026-04-22T01:12:59.175927+00:00"
+      },
+      {
+        "state": "3266.93",
+        "last_changed": "2026-04-22T01:13:29.156410+00:00"
+      },
+      {
+        "state": "2901.22333333333",
+        "last_changed": "2026-04-22T01:13:59.223311+00:00"
+      },
+      {
+        "state": "2539.53",
+        "last_changed": "2026-04-22T01:14:29.172653+00:00"
+      },
+      {
+        "state": "2180.86333333333",
+        "last_changed": "2026-04-22T01:14:59.133189+00:00"
+      },
+      {
+        "state": "1823.79",
+        "last_changed": "2026-04-22T01:15:29.151978+00:00"
+      },
+      {
+        "state": "1469.79",
+        "last_changed": "2026-04-22T01:15:59.150323+00:00"
+      },
+      {
+        "state": "1123.28333333333",
+        "last_changed": "2026-04-22T01:16:29.167938+00:00"
+      },
+      {
+        "state": "1195.88",
+        "last_changed": "2026-04-22T01:16:59.211862+00:00"
+      },
+      {
+        "state": "1212.37333333333",
+        "last_changed": "2026-04-22T01:17:29.163076+00:00"
+      },
+      {
+        "state": "1251.13333333333",
+        "last_changed": "2026-04-22T01:17:59.176097+00:00"
+      },
+      {
+        "state": "1292.46",
+        "last_changed": "2026-04-22T01:18:29.292577+00:00"
+      },
+      {
+        "state": "1333.94",
+        "last_changed": "2026-04-22T01:18:59.207261+00:00"
+      },
+      {
+        "state": "1374.60666666667",
+        "last_changed": "2026-04-22T01:19:29.224376+00:00"
+      },
+      {
+        "state": "1411.36",
+        "last_changed": "2026-04-22T01:19:59.201983+00:00"
+      },
+      {
+        "state": "1445.76666666667",
+        "last_changed": "2026-04-22T01:20:29.154928+00:00"
+      },
+      {
+        "state": "1476.01333333333",
+        "last_changed": "2026-04-22T01:20:59.163228+00:00"
+      },
+      {
+        "state": "1498.2",
+        "last_changed": "2026-04-22T01:21:29.123837+00:00"
+      },
+      {
+        "state": "1513.93333333333",
+        "last_changed": "2026-04-22T01:21:59.205635+00:00"
+      },
+      {
+        "state": "1519.22666666667",
+        "last_changed": "2026-04-22T01:22:29.168349+00:00"
+      },
+      {
+        "state": "1506.16",
+        "last_changed": "2026-04-22T01:22:59.197459+00:00"
+      },
+      {
+        "state": "1479.86",
+        "last_changed": "2026-04-22T01:23:29.148428+00:00"
+      },
+      {
+        "state": "1449.74666666667",
+        "last_changed": "2026-04-22T01:23:59.149675+00:00"
+      },
+      {
+        "state": "1418.58",
+        "last_changed": "2026-04-22T01:24:29.146839+00:00"
+      },
+      {
+        "state": "1387.29333333333",
+        "last_changed": "2026-04-22T01:24:59.147233+00:00"
+      },
+      {
+        "state": "1355.51333333333",
+        "last_changed": "2026-04-22T01:25:29.241292+00:00"
+      },
+      {
+        "state": "1323.74",
+        "last_changed": "2026-04-22T01:25:59.175094+00:00"
+      },
+      {
+        "state": "1292.42666666667",
+        "last_changed": "2026-04-22T01:26:29.148978+00:00"
+      },
+      {
+        "state": "1263.10666666667",
+        "last_changed": "2026-04-22T01:26:59.156554+00:00"
+      },
+      {
+        "state": "1236.30666666667",
+        "last_changed": "2026-04-22T01:27:29.268407+00:00"
+      },
+      {
+        "state": "1221.58",
+        "last_changed": "2026-04-22T01:27:59.185095+00:00"
+      },
+      {
+        "state": "1216.34",
+        "last_changed": "2026-04-22T01:28:29.215427+00:00"
+      },
+      {
+        "state": "1213.63333333333",
+        "last_changed": "2026-04-22T01:28:59.157767+00:00"
+      },
+      {
+        "state": "1211.94",
+        "last_changed": "2026-04-22T01:29:29.211937+00:00"
+      },
+      {
+        "state": "1210.77333333333",
+        "last_changed": "2026-04-22T01:29:59.244214+00:00"
+      },
+      {
+        "state": "1210.13333333333",
+        "last_changed": "2026-04-22T01:30:29.250688+00:00"
+      },
+      {
+        "state": "1209.52",
+        "last_changed": "2026-04-22T01:30:59.168371+00:00"
+      },
+      {
+        "state": "1208.78",
+        "last_changed": "2026-04-22T01:31:29.169342+00:00"
+      },
+      {
+        "state": "1207.93333333333",
+        "last_changed": "2026-04-22T01:31:59.271528+00:00"
+      },
+      {
+        "state": "1207.12666666667",
+        "last_changed": "2026-04-22T01:32:29.161865+00:00"
+      },
+      {
+        "state": "1206.26666666667",
+        "last_changed": "2026-04-22T01:32:59.142712+00:00"
+      },
+      {
+        "state": "1205.61333333333",
+        "last_changed": "2026-04-22T01:33:29.149687+00:00"
+      },
+      {
+        "state": "1205.15333333333",
+        "last_changed": "2026-04-22T01:33:59.230081+00:00"
+      },
+      {
+        "state": "1204.62",
+        "last_changed": "2026-04-22T01:34:29.153531+00:00"
+      },
+      {
+        "state": "1204.12666666667",
+        "last_changed": "2026-04-22T01:34:59.162078+00:00"
+      },
+      {
+        "state": "1203.61333333333",
+        "last_changed": "2026-04-22T01:35:29.144574+00:00"
+      },
+      {
+        "state": "1203.05333333333",
+        "last_changed": "2026-04-22T01:35:59.173308+00:00"
+      },
+      {
+        "state": "1202.62666666667",
+        "last_changed": "2026-04-22T01:36:29.173559+00:00"
+      },
+      {
+        "state": "1202.21333333333",
+        "last_changed": "2026-04-22T01:36:59.151539+00:00"
+      },
+      {
+        "state": "1201.78",
+        "last_changed": "2026-04-22T01:37:29.270589+00:00"
+      },
+      {
+        "state": "1201.38666666667",
+        "last_changed": "2026-04-22T01:37:59.148113+00:00"
+      },
+      {
+        "state": "1201.06666666667",
+        "last_changed": "2026-04-22T01:38:29.197257+00:00"
+      },
+      {
+        "state": "1200.63333333333",
+        "last_changed": "2026-04-22T01:38:59.159190+00:00"
+      },
+      {
+        "state": "1200.29333333333",
+        "last_changed": "2026-04-22T01:39:29.147783+00:00"
+      },
+      {
+        "state": "1199.97333333333",
+        "last_changed": "2026-04-22T01:39:59.138002+00:00"
+      },
+      {
+        "state": "1199.54666666667",
+        "last_changed": "2026-04-22T01:40:29.184820+00:00"
+      },
+      {
+        "state": "1199.34",
+        "last_changed": "2026-04-22T01:40:59.188165+00:00"
+      },
+      {
+        "state": "1199.02",
+        "last_changed": "2026-04-22T01:41:29.163287+00:00"
+      },
+      {
+        "state": "1198.81333333333",
+        "last_changed": "2026-04-22T01:41:59.199664+00:00"
+      },
+      {
+        "state": "1196.59",
+        "last_changed": "2026-04-22T01:42:29.206065+00:00"
+      },
+      {
+        "state": "1443.05666666667",
+        "last_changed": "2026-04-22T01:42:59.212454+00:00"
+      },
+      {
+        "state": "1792.00333333333",
+        "last_changed": "2026-04-22T01:43:29.196811+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_temperature",
+        "state": "107.15",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "\u00b0F",
+          "device_class": "temperature",
+          "friendly_name": "heatcore Temperature"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "107.6",
+        "last_changed": "2026-04-22T00:58:48.361939+00:00"
+      },
+      {
+        "state": "95.0",
+        "last_changed": "2026-04-22T01:00:18.271164+00:00"
+      },
+      {
+        "state": "109.4",
+        "last_changed": "2026-04-22T01:00:48.274251+00:00"
+      },
+      {
+        "state": "115.25",
+        "last_changed": "2026-04-22T01:01:18.235493+00:00"
+      },
+      {
+        "state": "116.6",
+        "last_changed": "2026-04-22T01:01:48.212076+00:00"
+      },
+      {
+        "state": "115.25",
+        "last_changed": "2026-04-22T01:02:18.381957+00:00"
+      },
+      {
+        "state": "116.6",
+        "last_changed": "2026-04-22T01:02:48.401780+00:00"
+      },
+      {
+        "state": "117.95",
+        "last_changed": "2026-04-22T01:03:18.231051+00:00"
+      },
+      {
+        "state": "118.4",
+        "last_changed": "2026-04-22T01:03:48.475585+00:00"
+      },
+      {
+        "state": "118.85",
+        "last_changed": "2026-04-22T01:04:18.214460+00:00"
+      },
+      {
+        "state": "118.4",
+        "last_changed": "2026-04-22T01:04:48.300528+00:00"
+      },
+      {
+        "state": "118.85",
+        "last_changed": "2026-04-22T01:05:18.265615+00:00"
+      },
+      {
+        "state": "119.3",
+        "last_changed": "2026-04-22T01:06:18.294428+00:00"
+      },
+      {
+        "state": "120.2",
+        "last_changed": "2026-04-22T01:06:48.261706+00:00"
+      },
+      {
+        "state": "120.65",
+        "last_changed": "2026-04-22T01:09:49.338317+00:00"
+      },
+      {
+        "state": "121.1",
+        "last_changed": "2026-04-22T01:10:59.216252+00:00"
+      },
+      {
+        "state": "96.8",
+        "last_changed": "2026-04-22T01:11:59.172461+00:00"
+      },
+      {
+        "state": "95.0",
+        "last_changed": "2026-04-22T01:12:29.207536+00:00"
+      },
+      {
+        "state": "91.85",
+        "last_changed": "2026-04-22T01:12:59.175850+00:00"
+      },
+      {
+        "state": "91.4",
+        "last_changed": "2026-04-22T01:13:29.156359+00:00"
+      },
+      {
+        "state": "91.85",
+        "last_changed": "2026-04-22T01:16:59.211804+00:00"
+      },
+      {
+        "state": "92.3",
+        "last_changed": "2026-04-22T01:17:29.163022+00:00"
+      },
+      {
+        "state": "93.2",
+        "last_changed": "2026-04-22T01:17:59.176047+00:00"
+      },
+      {
+        "state": "92.75",
+        "last_changed": "2026-04-22T01:21:29.123765+00:00"
+      },
+      {
+        "state": "91.85",
+        "last_changed": "2026-04-22T01:21:59.205570+00:00"
+      },
+      {
+        "state": "91.4",
+        "last_changed": "2026-04-22T01:22:29.168292+00:00"
+      },
+      {
+        "state": "90.05",
+        "last_changed": "2026-04-22T01:22:59.197403+00:00"
+      },
+      {
+        "state": "89.6",
+        "last_changed": "2026-04-22T01:23:29.148376+00:00"
+      },
+      {
+        "state": "88.25",
+        "last_changed": "2026-04-22T01:26:29.148872+00:00"
+      },
+      {
+        "state": "87.8",
+        "last_changed": "2026-04-22T01:30:29.250634+00:00"
+      },
+      {
+        "state": "87.35",
+        "last_changed": "2026-04-22T01:38:29.197137+00:00"
+      },
+      {
+        "state": "86.45",
+        "last_changed": "2026-04-22T01:39:59.137920+00:00"
+      },
+      {
+        "state": "86.9",
+        "last_changed": "2026-04-22T01:40:29.184764+00:00"
+      },
+      {
+        "state": "86.45",
+        "last_changed": "2026-04-22T01:40:59.188048+00:00"
+      },
+      {
+        "state": "95.45",
+        "last_changed": "2026-04-22T01:42:29.206013+00:00"
+      },
+      {
+        "state": "107.6",
+        "last_changed": "2026-04-22T01:42:59.212396+00:00"
+      },
+      {
+        "state": "113.0",
+        "last_changed": "2026-04-22T01:43:29.196750+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_pid_error",
+        "state": "unknown",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "\u00b0F",
+          "device_class": "temperature",
+          "icon": "mdi:delta",
+          "friendly_name": "heatcore PID Error"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "50.0",
+        "last_changed": "2026-04-22T00:59:48.373039+00:00"
+      },
+      {
+        "state": "49.658",
+        "last_changed": "2026-04-22T01:00:48.275141+00:00"
+      },
+      {
+        "state": "50.234",
+        "last_changed": "2026-04-22T01:01:48.213034+00:00"
+      },
+      {
+        "state": "49.316",
+        "last_changed": "2026-04-22T01:02:48.402768+00:00"
+      },
+      {
+        "state": "48.542",
+        "last_changed": "2026-04-22T01:03:48.476458+00:00"
+      },
+      {
+        "state": "47.984",
+        "last_changed": "2026-04-22T01:04:48.301307+00:00"
+      },
+      {
+        "state": "47.408",
+        "last_changed": "2026-04-22T01:05:48.279553+00:00"
+      },
+      {
+        "state": "47.084",
+        "last_changed": "2026-04-22T01:06:48.262527+00:00"
+      },
+      {
+        "state": "46.742",
+        "last_changed": "2026-04-22T01:07:48.663733+00:00"
+      },
+      {
+        "state": "46.616",
+        "last_changed": "2026-04-22T01:08:49.276990+00:00"
+      },
+      {
+        "state": "46.4",
+        "last_changed": "2026-04-22T01:09:49.339149+00:00"
+      },
+      {
+        "state": "unknown",
+        "last_changed": "2026-04-22T01:10:59.221627+00:00"
+      },
+      {
+        "state": "45.842",
+        "last_changed": "2026-04-22T01:11:59.173607+00:00"
+      },
+      {
+        "state": "47.516",
+        "last_changed": "2026-04-22T01:13:59.224080+00:00"
+      },
+      {
+        "state": "48.65",
+        "last_changed": "2026-04-22T01:14:59.133845+00:00"
+      },
+      {
+        "state": "49.442",
+        "last_changed": "2026-04-22T01:15:59.151155+00:00"
+      },
+      {
+        "state": "49.892",
+        "last_changed": "2026-04-22T01:16:59.212593+00:00"
+      },
+      {
+        "state": "50.234",
+        "last_changed": "2026-04-22T01:17:59.176706+00:00"
+      },
+      {
+        "state": "50.342",
+        "last_changed": "2026-04-22T01:18:59.207898+00:00"
+      },
+      {
+        "state": "50.45",
+        "last_changed": "2026-04-22T01:19:59.202782+00:00"
+      },
+      {
+        "state": "50.684",
+        "last_changed": "2026-04-22T01:20:59.163994+00:00"
+      },
+      {
+        "state": "50.792",
+        "last_changed": "2026-04-22T01:21:59.206420+00:00"
+      },
+      {
+        "state": "50.9",
+        "last_changed": "2026-04-22T01:22:59.198240+00:00"
+      },
+      {
+        "state": "51.116",
+        "last_changed": "2026-04-22T01:23:59.150450+00:00"
+      },
+      {
+        "state": "51.35",
+        "last_changed": "2026-04-22T01:24:59.147979+00:00"
+      },
+      {
+        "state": "51.584",
+        "last_changed": "2026-04-22T01:25:59.176003+00:00"
+      },
+      {
+        "state": "51.8",
+        "last_changed": "2026-04-22T01:26:59.157334+00:00"
+      },
+      {
+        "state": "52.016",
+        "last_changed": "2026-04-22T01:27:59.185817+00:00"
+      },
+      {
+        "state": "52.142",
+        "last_changed": "2026-04-22T01:28:59.158535+00:00"
+      },
+      {
+        "state": "52.358",
+        "last_changed": "2026-04-22T01:29:59.245001+00:00"
+      },
+      {
+        "state": "52.484",
+        "last_changed": "2026-04-22T01:30:59.169189+00:00"
+      },
+      {
+        "state": "52.592",
+        "last_changed": "2026-04-22T01:31:59.272241+00:00"
+      },
+      {
+        "state": "52.7",
+        "last_changed": "2026-04-22T01:32:59.143380+00:00"
+      },
+      {
+        "state": "52.808",
+        "last_changed": "2026-04-22T01:33:59.230733+00:00"
+      },
+      {
+        "state": "52.934",
+        "last_changed": "2026-04-22T01:34:59.162792+00:00"
+      },
+      {
+        "state": "53.042",
+        "last_changed": "2026-04-22T01:35:59.174057+00:00"
+      },
+      {
+        "state": "53.15",
+        "last_changed": "2026-04-22T01:36:59.152251+00:00"
+      },
+      {
+        "state": "53.366",
+        "last_changed": "2026-04-22T01:38:59.159964+00:00"
+      },
+      {
+        "state": "53.492",
+        "last_changed": "2026-04-22T01:40:59.188783+00:00"
+      },
+      {
+        "state": "53.6",
+        "last_changed": "2026-04-22T01:42:59.213279+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_pid_proportional",
+        "state": "unknown",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "W",
+          "device_class": "power",
+          "friendly_name": "heatcore PID Proportional"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "2000.0",
+        "last_changed": "2026-04-22T00:59:48.373091+00:00"
+      },
+      {
+        "state": "1962.5",
+        "last_changed": "2026-04-22T01:00:48.275182+00:00"
+      },
+      {
+        "state": "2025.0",
+        "last_changed": "2026-04-22T01:01:48.213085+00:00"
+      },
+      {
+        "state": "1925.0",
+        "last_changed": "2026-04-22T01:02:48.402813+00:00"
+      },
+      {
+        "state": "1837.5",
+        "last_changed": "2026-04-22T01:03:48.476501+00:00"
+      },
+      {
+        "state": "1775.0",
+        "last_changed": "2026-04-22T01:04:48.301347+00:00"
+      },
+      {
+        "state": "1712.5",
+        "last_changed": "2026-04-22T01:05:48.279593+00:00"
+      },
+      {
+        "state": "1675.0",
+        "last_changed": "2026-04-22T01:06:48.262569+00:00"
+      },
+      {
+        "state": "1637.5",
+        "last_changed": "2026-04-22T01:07:48.663774+00:00"
+      },
+      {
+        "state": "1625.0",
+        "last_changed": "2026-04-22T01:08:49.277030+00:00"
+      },
+      {
+        "state": "1600.0",
+        "last_changed": "2026-04-22T01:09:49.339190+00:00"
+      },
+      {
+        "state": "unknown",
+        "last_changed": "2026-04-22T01:10:59.221863+00:00"
+      },
+      {
+        "state": "1537.5",
+        "last_changed": "2026-04-22T01:11:59.173655+00:00"
+      },
+      {
+        "state": "1725.0",
+        "last_changed": "2026-04-22T01:13:59.224121+00:00"
+      },
+      {
+        "state": "1850.0",
+        "last_changed": "2026-04-22T01:14:59.133909+00:00"
+      },
+      {
+        "state": "1937.5",
+        "last_changed": "2026-04-22T01:15:59.151216+00:00"
+      },
+      {
+        "state": "1987.5",
+        "last_changed": "2026-04-22T01:16:59.212633+00:00"
+      },
+      {
+        "state": "2025.0",
+        "last_changed": "2026-04-22T01:17:59.176747+00:00"
+      },
+      {
+        "state": "2037.5",
+        "last_changed": "2026-04-22T01:18:59.207946+00:00"
+      },
+      {
+        "state": "2050.0",
+        "last_changed": "2026-04-22T01:19:59.202821+00:00"
+      },
+      {
+        "state": "2075.0",
+        "last_changed": "2026-04-22T01:20:59.164034+00:00"
+      },
+      {
+        "state": "2087.5",
+        "last_changed": "2026-04-22T01:21:59.206462+00:00"
+      },
+      {
+        "state": "2100.0",
+        "last_changed": "2026-04-22T01:22:59.198282+00:00"
+      },
+      {
+        "state": "2125.0",
+        "last_changed": "2026-04-22T01:23:59.150490+00:00"
+      },
+      {
+        "state": "2150.0",
+        "last_changed": "2026-04-22T01:24:59.148021+00:00"
+      },
+      {
+        "state": "2175.0",
+        "last_changed": "2026-04-22T01:25:59.176050+00:00"
+      },
+      {
+        "state": "2200.0",
+        "last_changed": "2026-04-22T01:26:59.157376+00:00"
+      },
+      {
+        "state": "2225.0",
+        "last_changed": "2026-04-22T01:27:59.185858+00:00"
+      },
+      {
+        "state": "2237.5",
+        "last_changed": "2026-04-22T01:28:59.158577+00:00"
+      },
+      {
+        "state": "2262.5",
+        "last_changed": "2026-04-22T01:29:59.245044+00:00"
+      },
+      {
+        "state": "2275.0",
+        "last_changed": "2026-04-22T01:30:59.169230+00:00"
+      },
+      {
+        "state": "2287.5",
+        "last_changed": "2026-04-22T01:31:59.272284+00:00"
+      },
+      {
+        "state": "2300.0",
+        "last_changed": "2026-04-22T01:32:59.143426+00:00"
+      },
+      {
+        "state": "2312.5",
+        "last_changed": "2026-04-22T01:33:59.230774+00:00"
+      },
+      {
+        "state": "2325.0",
+        "last_changed": "2026-04-22T01:34:59.162832+00:00"
+      },
+      {
+        "state": "2337.5",
+        "last_changed": "2026-04-22T01:35:59.174099+00:00"
+      },
+      {
+        "state": "2350.0",
+        "last_changed": "2026-04-22T01:36:59.152292+00:00"
+      },
+      {
+        "state": "2375.0",
+        "last_changed": "2026-04-22T01:38:59.160007+00:00"
+      },
+      {
+        "state": "2387.5",
+        "last_changed": "2026-04-22T01:40:59.188832+00:00"
+      },
+      {
+        "state": "2400.0",
+        "last_changed": "2026-04-22T01:42:59.213320+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_pid_integral",
+        "state": "unknown",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "W",
+          "device_class": "power",
+          "friendly_name": "heatcore PID Integral"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "1562.5",
+        "last_changed": "2026-04-22T00:59:48.373157+00:00"
+      },
+      {
+        "state": "3062.92",
+        "last_changed": "2026-04-22T01:00:18.272120+00:00"
+      },
+      {
+        "state": "4507.63",
+        "last_changed": "2026-04-22T01:03:18.231923+00:00"
+      },
+      {
+        "state": "unknown",
+        "last_changed": "2026-04-22T01:10:59.222119+00:00"
+      },
+      {
+        "state": "0.0",
+        "last_changed": "2026-04-22T01:11:59.173699+00:00"
+      },
+      {
+        "state": "1153.32",
+        "last_changed": "2026-04-22T01:12:29.208605+00:00"
+      },
+      {
+        "state": "2307.78",
+        "last_changed": "2026-04-22T01:12:59.176685+00:00"
+      },
+      {
+        "state": "3459.68",
+        "last_changed": "2026-04-22T01:13:29.157234+00:00"
+      },
+      {
+        "state": "4752.59",
+        "last_changed": "2026-04-22T01:13:59.224160+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_pid_derivative",
+        "state": "unknown",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "W",
+          "device_class": "power",
+          "friendly_name": "heatcore PID Derivative"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "0.0",
+        "last_changed": "2026-04-22T00:59:48.373207+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:00:18.272164+00:00"
+      },
+      {
+        "state": "-0.63",
+        "last_changed": "2026-04-22T01:00:48.275247+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:01:18.236399+00:00"
+      },
+      {
+        "state": "1.04",
+        "last_changed": "2026-04-22T01:01:48.213149+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:02:18.383026+00:00"
+      },
+      {
+        "state": "-1.66",
+        "last_changed": "2026-04-22T01:02:48.402928+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:03:18.231966+00:00"
+      },
+      {
+        "state": "-1.47",
+        "last_changed": "2026-04-22T01:03:48.476566+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:04:18.215385+00:00"
+      },
+      {
+        "state": "-1.05",
+        "last_changed": "2026-04-22T01:04:48.301411+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:05:18.266576+00:00"
+      },
+      {
+        "state": "-1.04",
+        "last_changed": "2026-04-22T01:05:48.279656+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:06:18.295482+00:00"
+      },
+      {
+        "state": "-0.62",
+        "last_changed": "2026-04-22T01:06:48.262633+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:07:18.245586+00:00"
+      },
+      {
+        "state": "-0.63",
+        "last_changed": "2026-04-22T01:07:48.663836+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:08:19.303258+00:00"
+      },
+      {
+        "state": "-0.2",
+        "last_changed": "2026-04-22T01:08:49.277092+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:09:19.320296+00:00"
+      },
+      {
+        "state": "-0.42",
+        "last_changed": "2026-04-22T01:09:49.339253+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:10:19.628255+00:00"
+      },
+      {
+        "state": "unknown",
+        "last_changed": "2026-04-22T01:10:59.222376+00:00"
+      },
+      {
+        "state": "0.0",
+        "last_changed": "2026-04-22T01:11:59.173742+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:12:29.208646+00:00"
+      },
+      {
+        "state": "3.13",
+        "last_changed": "2026-04-22T01:13:59.224198+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:14:29.173594+00:00"
+      },
+      {
+        "state": "2.09",
+        "last_changed": "2026-04-22T01:14:59.134002+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:15:29.152808+00:00"
+      },
+      {
+        "state": "1.46",
+        "last_changed": "2026-04-22T01:15:59.151308+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:16:29.168805+00:00"
+      },
+      {
+        "state": "0.83",
+        "last_changed": "2026-04-22T01:16:59.212696+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:17:29.163816+00:00"
+      },
+      {
+        "state": "0.63",
+        "last_changed": "2026-04-22T01:17:59.176809+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:18:29.293382+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:18:59.208010+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:19:29.225241+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:19:59.202906+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:20:29.155782+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:20:59.164098+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:21:29.124739+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:21:59.206528+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:22:29.169196+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:22:59.198349+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:23:29.149232+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:23:59.150555+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:24:29.147657+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:24:59.148085+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:25:29.242193+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:25:59.176132+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:26:29.149709+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:26:59.157441+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:27:29.269300+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:27:59.185965+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:28:29.216265+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:28:59.158643+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:29:29.212817+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:29:59.245107+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:30:29.251314+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:30:59.169296+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:31:29.169959+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:31:59.272350+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:32:29.162866+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:32:59.143491+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:33:29.150596+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:33:59.230839+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:34:29.154448+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:34:59.162918+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:35:29.145452+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:35:59.174164+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:36:29.174396+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:36:59.152369+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:37:29.271621+00:00"
+      },
+      {
+        "state": "0.42",
+        "last_changed": "2026-04-22T01:38:59.160070+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:39:29.148658+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:40:59.188935+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:41:29.164207+00:00"
+      },
+      {
+        "state": "0.21",
+        "last_changed": "2026-04-22T01:42:59.213386+00:00"
+      },
+      {
+        "state": "-0.0",
+        "last_changed": "2026-04-22T01:43:29.197666+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_pid_requested_output",
+        "state": "unknown",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "W",
+          "device_class": "power",
+          "friendly_name": "heatcore PID Requested Output"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "3562",
+        "last_changed": "2026-04-22T00:59:48.373296+00:00"
+      },
+      {
+        "state": "5000",
+        "last_changed": "2026-04-22T01:00:18.272244+00:00"
+      },
+      {
+        "state": "4986",
+        "last_changed": "2026-04-22T01:02:48.403002+00:00"
+      },
+      {
+        "state": "5000",
+        "last_changed": "2026-04-22T01:03:18.232023+00:00"
+      },
+      {
+        "state": "unknown",
+        "last_changed": "2026-04-22T01:10:59.222832+00:00"
+      },
+      {
+        "state": "1538",
+        "last_changed": "2026-04-22T01:11:59.173820+00:00"
+      },
+      {
+        "state": "2691",
+        "last_changed": "2026-04-22T01:12:29.208704+00:00"
+      },
+      {
+        "state": "3845",
+        "last_changed": "2026-04-22T01:12:59.176766+00:00"
+      },
+      {
+        "state": "4997",
+        "last_changed": "2026-04-22T01:13:29.157315+00:00"
+      },
+      {
+        "state": "5000",
+        "last_changed": "2026-04-22T01:13:59.224254+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_pid_output",
+        "state": "unknown",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "W",
+          "device_class": "power",
+          "friendly_name": "heatcore PID Output"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "3600",
+        "last_changed": "2026-04-22T00:59:48.373252+00:00"
+      },
+      {
+        "state": "5000",
+        "last_changed": "2026-04-22T01:00:18.272204+00:00"
+      },
+      {
+        "state": "unknown",
+        "last_changed": "2026-04-22T01:10:59.222605+00:00"
+      },
+      {
+        "state": "1538",
+        "last_changed": "2026-04-22T01:11:59.173782+00:00"
+      },
+      {
+        "state": "5000",
+        "last_changed": "2026-04-22T01:42:29.206950+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.heatcore_pid_target_temperature",
+        "state": "100.4",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "\u00b0F",
+          "device_class": "temperature",
+          "icon": "mdi:thermometer-lines",
+          "friendly_name": "heatcore PID Target Temperature"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "unknown",
+        "last_changed": "2026-04-22T01:10:59.221359+00:00"
+      },
+      {
+        "state": "100.4",
+        "last_changed": "2026-04-22T01:11:29.168665+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "binary_sensor.heatcore_pid_safety_engaged",
+        "state": "off",
+        "attributes": {
+          "device_class": "problem",
+          "icon": "mdi:shield-alert",
+          "friendly_name": "heatcore PID Safety Engaged"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "number.heatcore_pid_target_temperature",
+        "state": "38.0",
+        "attributes": {
+          "unit_of_measurement": "\u00b0C",
+          "icon": "mdi:thermometer-lines",
+          "friendly_name": "heatcore PID Target Temperature"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "switch.heatcore_pid_mode",
+        "state": "off",
+        "attributes": {
+          "icon": "mdi:thermostat-auto",
+          "friendly_name": "heatcore PID Mode"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "on",
+        "last_changed": "2026-04-22T00:58:53.644213+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "switch.heatcore_mining_control",
+        "state": "on",
+        "attributes": {
+          "icon": "mdi:power",
+          "friendly_name": "heatcore Mining Control"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      }
+    ],
+    [
+      {
+        "entity_id": "sensor.scout_21_temperature_probe",
+        "state": "82.0625",
+        "attributes": {
+          "state_class": "measurement",
+          "unit_of_measurement": "\u00b0F",
+          "device_class": "temperature",
+          "friendly_name": "boiler-loop-hx"
+        },
+        "last_changed": "2026-04-22T00:58:33+00:00",
+        "last_updated": "2026-04-22T00:58:33+00:00"
+      },
+      {
+        "state": "82.4",
+        "last_changed": "2026-04-22T00:59:00.116706+00:00"
+      },
+      {
+        "state": "82.7375",
+        "last_changed": "2026-04-22T01:00:00.121952+00:00"
+      },
+      {
+        "state": "82.175",
+        "last_changed": "2026-04-22T01:01:00.120269+00:00"
+      },
+      {
+        "state": "83.075",
+        "last_changed": "2026-04-22T01:02:00.126380+00:00"
+      },
+      {
+        "state": "83.8625",
+        "last_changed": "2026-04-22T01:03:00.124147+00:00"
+      },
+      {
+        "state": "84.425",
+        "last_changed": "2026-04-22T01:04:00.130512+00:00"
+      },
+      {
+        "state": "84.9875",
+        "last_changed": "2026-04-22T01:05:00.136967+00:00"
+      },
+      {
+        "state": "85.325",
+        "last_changed": "2026-04-22T01:06:00.143245+00:00"
+      },
+      {
+        "state": "85.6625",
+        "last_changed": "2026-04-22T01:07:00.149568+00:00"
+      },
+      {
+        "state": "85.775",
+        "last_changed": "2026-04-22T01:08:00.156660+00:00"
+      },
+      {
+        "state": "86.0",
+        "last_changed": "2026-04-22T01:09:00.163172+00:00"
+      },
+      {
+        "state": "86.225",
+        "last_changed": "2026-04-22T01:10:00.170797+00:00"
+      },
+      {
+        "state": "unavailable",
+        "last_changed": "2026-04-22T01:10:59.245193+00:00"
+      },
+      {
+        "state": "86.225",
+        "last_changed": "2026-04-22T01:10:59.586367+00:00"
+      },
+      {
+        "state": "86.5625",
+        "last_changed": "2026-04-22T01:11:00.176613+00:00"
+      },
+      {
+        "state": "84.875",
+        "last_changed": "2026-04-22T01:13:00.190180+00:00"
+      },
+      {
+        "state": "83.75",
+        "last_changed": "2026-04-22T01:14:00.132721+00:00"
+      },
+      {
+        "state": "82.9625",
+        "last_changed": "2026-04-22T01:15:00.137019+00:00"
+      },
+      {
+        "state": "82.5125",
+        "last_changed": "2026-04-22T01:16:00.138963+00:00"
+      },
+      {
+        "state": "82.175",
+        "last_changed": "2026-04-22T01:17:00.139308+00:00"
+      },
+      {
+        "state": "82.0625",
+        "last_changed": "2026-04-22T01:18:00.126976+00:00"
+      },
+      {
+        "state": "81.95",
+        "last_changed": "2026-04-22T01:19:00.143004+00:00"
+      },
+      {
+        "state": "81.725",
+        "last_changed": "2026-04-22T01:20:00.134757+00:00"
+      },
+      {
+        "state": "81.6125",
+        "last_changed": "2026-04-22T01:21:00.141295+00:00"
+      },
+      {
+        "state": "81.5",
+        "last_changed": "2026-04-22T01:22:00.148618+00:00"
+      },
+      {
+        "state": "81.275",
+        "last_changed": "2026-04-22T01:23:00.155251+00:00"
+      },
+      {
+        "state": "81.05",
+        "last_changed": "2026-04-22T01:24:00.161124+00:00"
+      },
+      {
+        "state": "80.825",
+        "last_changed": "2026-04-22T01:25:00.167785+00:00"
+      },
+      {
+        "state": "80.6",
+        "last_changed": "2026-04-22T01:26:00.175141+00:00"
+      },
+      {
+        "state": "80.375",
+        "last_changed": "2026-04-22T01:27:00.180973+00:00"
+      },
+      {
+        "state": "80.2625",
+        "last_changed": "2026-04-22T01:28:00.187703+00:00"
+      },
+      {
+        "state": "80.0375",
+        "last_changed": "2026-04-22T01:29:00.194234+00:00"
+      },
+      {
+        "state": "79.925",
+        "last_changed": "2026-04-22T01:30:00.135212+00:00"
+      },
+      {
+        "state": "79.8125",
+        "last_changed": "2026-04-22T01:31:00.136495+00:00"
+      },
+      {
+        "state": "79.7",
+        "last_changed": "2026-04-22T01:32:00.137724+00:00"
+      },
+      {
+        "state": "79.5875",
+        "last_changed": "2026-04-22T01:33:00.153426+00:00"
+      },
+      {
+        "state": "79.475",
+        "last_changed": "2026-04-22T01:34:00.154109+00:00"
+      },
+      {
+        "state": "79.3625",
+        "last_changed": "2026-04-22T01:35:00.152551+00:00"
+      },
+      {
+        "state": "79.25",
+        "last_changed": "2026-04-22T01:36:00.137702+00:00"
+      },
+      {
+        "state": "79.025",
+        "last_changed": "2026-04-22T01:38:00.151629+00:00"
+      },
+      {
+        "state": "78.9125",
+        "last_changed": "2026-04-22T01:40:00.164453+00:00"
+      },
+      {
+        "state": "78.8",
+        "last_changed": "2026-04-22T01:42:00.177738+00:00"
+      }
+    ]
+  ]
+}

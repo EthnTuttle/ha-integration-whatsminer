@@ -582,7 +582,7 @@ def test_an_armed_fault_ceiling_lowers_the_limit_once_tuned(monkeypatch):
         "power_limit_w": 5000, "regulated_power_w": 2200,
         "fault_at": rig.clock.t, "fault_power": 1224,
         "fault_reason": "external derate to 1224W (commanded 5000W)",
-        "proven_max": 2200, "proven_max_at": rig.clock.t,
+        "proven_max": 2200, "proven_max_at": rig.clock.t + 60,  # witnessed after the fault
     }
     rig.mining(True, limit=5000)
     rig.coord.data["wattage"] = 2200

@@ -1506,7 +1506,16 @@ class WhatsminerController:
         """
         ceiling = self._power_max
         if self._fault_at is not None and now - self._fault_at < FAULT_TTL_S:
-            if self._proven_max is not None:
+            # A witness counts only if it postdates the fault: a run the miner
+            # held BEFORE it faulted says nothing about what it can hold now
+            # (2026-10-20 night: witness 2150 W from the evening outranked a
+            # fresh 561, keeping the ceiling at 2400 W through a derate loop).
+            witnessed_since_fault = (
+                self._proven_max is not None
+                and self._proven_max_at is not None
+                and self._proven_max_at > self._fault_at
+            )
+            if witnessed_since_fault:
                 ref = self._proven_max
             elif self._fault_power is not None:
                 ref = self._fault_power
@@ -1797,6 +1806,16 @@ class WhatsminerController:
             _LOGGER.info(
                 "Miner restarted on its own after hashing %.0fs at %dW with the supply hot — "
                 "not counted as a crash (may be thermal)", regression.run_s, power,
+            )
+            return
+        if self._fault_at is not None and now - self._fault_at < FAULT_TTL_S:
+            # Fault episode in progress: its restarts are the fault's story,
+            # not floor evidence (2026-10-20 night: the 2320/561 derate loop
+            # ratcheted the crash floor 1450 → 2241 W while evidence was armed).
+            _LOGGER.warning(
+                "Miner restarted on its own after hashing %.0fs at %dW during a fault episode "
+                "(%s) — not counted toward the crash floor",
+                regression.run_s, power, self._fault_reason,
             )
             return
         _LOGGER.warning(

@@ -342,6 +342,16 @@ def tune(rig, up):
     rig.coord.data["up_freq_finish"] = up
 
 
+async def retune(rig):
+    """The retune a power write opens (each dynamic change re-opens frequency
+    search): up-freq-finish drops, then finishes — a new tuned epoch, so the
+    write gate's one-non-safety-write budget re-arms."""
+    tune(rig, 0)
+    await rig.tick()
+    tune(rig, 1)
+    await rig.tick()
+
+
 async def restart(rig, limit, up=0):
     """An Elapsed regression and a start edge, as btminer restarting looks from the poll."""
     rig.mining(False, limit=0)
@@ -424,6 +434,10 @@ def test_a_stale_tuned_reading_right_after_our_write_is_not_trusted(monkeypatch)
         await rig.tick()
         assert len(cmds(rig, "set_miner_power")) == n
         await rig.run(2)  # past V3_TUNE_GRACE_S
+        assert len(cmds(rig, "set_miner_power")) == n  # the grace still holds it
+        # The epoch's one non-safety write is spent; the next act follows the
+        # retune the write opened.
+        await retune(rig)
         assert len(cmds(rig, "set_miner_power")) == n + 1
 
     run_async(go())
@@ -594,6 +608,11 @@ def test_an_armed_fault_ceiling_lowers_the_limit_once_tuned(monkeypatch):
         assert ceiling == 2200 + C.PROVEN_MARGIN_W  # the witnessed hold plus margin
         await rig.run(5)
         assert cmds(rig, "set_power_limit") == [ceiling]  # exactly one deliberate restart
+        # That restart re-tunes; the wanted power follows once tuning finishes
+        # (the write gate budgets one non-safety write per tuned epoch).
+        await restart(rig, limit=ceiling, up=0)
+        tune(rig, 1)
+        await rig.tick()
         assert ("set_miner_power", 2200) in rig.calls  # the wanted power follows once tuned
         assert rig.ctl._op_target == 2200
         faults = rig.pid_state["faults"]
@@ -631,10 +650,14 @@ def test_rejection_falls_back_to_adjust_power_limit_resets_and_retries_v3_later(
         reg = rig.pid_state["power_command"]
         assert "code -1" in reg["v3_error"] and reg["v3_retry_at"]
         assert reg["last_command"] == "adjust_power_limit 3000 W (fallback)"
+        # The fallback write opened a new tuned epoch (reset directly — this
+        # test drives _command_power itself, no control step in between).
+        rig.ctl._epoch_write_used = False
         await rig.ctl._command_power(2800)  # inside the retry window: straight to the limit
         assert attempts == [3000] and cmds(rig, "set_power_limit") == [3000, 2800]
         rig.clock.t += C.V3_POWER_RETRY_S
         rig.coord.api.power_code = None
+        rig.ctl._epoch_write_used = False  # the 2800 W limit write's restart: new epoch
         await rig.ctl._command_power(2600)
         assert attempts == [3000, 2600] and cmds(rig, "set_miner_power") == [2600]
         assert "whatsminer_power_fallback" in pn.dismissed
@@ -671,6 +694,9 @@ def test_after_any_limit_clamp_the_next_increase_raises_the_ceiling_again(monkey
         rig.set_supply(123.0)
         await rig.tick()
         assert cmds(rig, "set_power_limit") == [1000]  # boot-window cap: the limit clamp
+        rig.set_supply(104.0)  # the cap condition clears
+        tune(rig, 1)
+        rig.ctl._epoch_write_used = False  # the retune the cap's restart opened: new epoch
         rig.ctl._supply_hot_at = None
         rig.ctl._caps_active = frozenset()
         await rig.ctl._command_power(2400, temp=104.0)
@@ -932,7 +958,10 @@ def test_on_inverted_bounds_the_ceiling_wins(monkeypatch):
 # ------------------------------------------------------ hashrate collapse
 
 
-def test_hashrate_collapse_after_a_reduction_is_undone_and_raises_the_crash_floor(monkeypatch):
+def test_hashrate_collapse_after_a_reduction_is_observed_not_undone(monkeypatch):
+    """v2.1: the collapse is reported (log, notification, regulation error), and the
+    crash floor still arms — but no corrective adjust_power_limit answers a documented
+    side effect of one dynamic write with a certain restart."""
     rig = v3_rig(monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 2500})
     rig.mining(True, limit=5000)
     rig.coord.data.update({"wattage": 2500, "hashrate_5s": 100.0})
@@ -942,7 +971,8 @@ def test_hashrate_collapse_after_a_reduction_is_undone_and_raises_the_crash_floo
         await rig.setup()
         await rig.tick()
         assert cmds(rig, "set_miner_power") == [2500]
-        await rig.run(2)
+        await rig.run(2)  # past V3_TUNE_GRACE_S
+        await retune(rig)  # the 2500 W write opened a tune; it finished: new epoch
         await rig.ctl._command_power(1800)
         assert cmds(rig, "set_miner_power") == [2500, 1800]
         tune(rig, 0)
@@ -951,15 +981,19 @@ def test_hashrate_collapse_after_a_reduction_is_undone_and_raises_the_crash_floo
         assert cmds(rig, "set_power_limit") == []
         rig.coord.data.update({"hashrate_5s": 10.0})  # 5.6 TH/kW: collapsed
         await rig.run(3)
-        assert cmds(rig, "set_power_limit") == [2500]  # undone to max(prev, stepped), once
+        assert cmds(rig, "set_power_limit") == []  # observed, never undone
+        assert cmds(rig, "set_miner_power") == [2500, 1800]  # no churn either
         assert rig.ctl._crash_floor == 2050  # crash evidence at the failed 1800 W + 250 W
         assert rig.ctl._bounds(rig.clock.t)[0] == 2050
         assert "whatsminer_power_collapse" in [k for k, _, _ in pn.created]
         assert "whatsminer_crash_floor" in [k for k, _, _ in pn.created]
         assert rig.pid_state["faults"]["floor_w"] == 2050
         assert Store.saved[KEY]["crash_floor"] == 2050
-        await rig.run(2)
-        assert len(rig.calls) == 3  # no churn: the undo sits above the floor it armed
+        # The regulation error is published and self-clears on a stable read
+        assert rig.pid_state["power_command"]["regulation_error"] == "collapse-observed-no-undo"
+        rig.coord.data.update({"hashrate_5s": 80.0})  # 44 TH/kW: recovered
+        await rig.tick()
+        assert rig.pid_state["power_command"]["regulation_error"] is None
         await rig.ctl.async_reset_fault_memory()
         assert rig.ctl._crash_floor is None and rig.ctl._bounds(rig.clock.t)[0] == 1000
         assert "whatsminer_power_collapse" in pn.dismissed
@@ -970,7 +1004,10 @@ def test_hashrate_collapse_after_a_reduction_is_undone_and_raises_the_crash_floo
 # -------------------------------------------------------- tuning timeout
 
 
-def test_a_miner_that_never_finishes_tuning_gets_the_wanted_power_as_its_limit(monkeypatch):
+def test_a_miner_that_never_finishes_tuning_is_left_alone_until_it_does(monkeypatch):
+    """v2.1: the tuning-timeout limit write is itself gated on up-freq-finish —
+    the firmware owns the tune; the wanted power is delivered (v3, restart-free)
+    once tuning finishes."""
     rig = v3_rig(monkeypatch, up=0, store={"power_limit_w": 5000, "regulated_power_w": 2000})
     rig.mining(True, limit=5000)
     rig.coord.data.update({"wattage": 3400})
@@ -980,12 +1017,108 @@ def test_a_miner_that_never_finishes_tuning_gets_the_wanted_power_as_its_limit(m
         await rig.setup()
         await rig.run(C.V3_TUNE_TIMEOUT_S / 60 - 1)
         assert rig.calls == []
-        await rig.run(2)
-        assert cmds(rig, "set_power_limit") == [2000]
-        held_at = rig.ctl._ceiling_hold_until - C.V3_CEILING_BACKOFF_S
-        assert rig.clock.t - 120 <= held_at <= rig.clock.t  # set when the timeout fired
-        assert rig.ctl._ceiling_ok(rig.clock.t, frozenset(), 104.0) is not None  # held down
+        await rig.run(2)  # past the tuning timeout
+        assert rig.calls == []  # gated: nothing reaches a miner that never tunes
+        tune(rig, 1)
+        await rig.tick()
+        assert cmds(rig, "set_miner_power") == [2000]  # the wanted power, once tuned
         await rig.run(60)
-        assert cmds(rig, "set_power_limit") == [2000]  # once
+        assert rig.calls == [("set_miner_power", 2000)]  # once
+
+    run_async(go())
+
+
+# -------------------------------------------------------- set-and-hold (pinned)
+
+
+def test_a_collapsed_band_pins_the_target_and_reconciles_once(monkeypatch):
+    """power_max - power_min below the fine step: the PID is bypassed for a
+    fixed Power-Min target, delivered once through the tuned v3 path."""
+    rig = v3_rig(monkeypatch, **{const.CONF_POWER_MIN: 1300, const.CONF_POWER_MAX: 1325})
+    rig.mining(True, limit=1325)  # at the band ceiling: 25 W above the pinned target
+    rig.set_supply(100.0)  # cold supply: a PID would push to the ceiling every step
+
+    async def go():
+        await rig.setup()
+        assert rig.pid_state["pid_mode"] == "pinned"
+        await rig.tick()
+        assert rig.calls == []  # first tick only learns: nothing commanded yet
+        await rig.tick()
+        assert cmds(rig, "set_miner_power") == [1300]  # the pinned target, restart-free
+        assert rig.ctl._op_target == 1300 and rig.ctl._op_in_force == 1300
+        await rig.run(30)
+        assert cmds(rig, "set_miner_power") == [1300]  # held: no PID churn inside the band
+        assert rig.ctl._op_established is True
+        assert rig.pid_state["power_command"]["regulated_power_w"] == 1300
+
+    run_async(go())
+
+
+def test_pinned_mode_gets_one_reconcile_write_per_tuned_epoch(monkeypatch):
+    """The reconcile goes through the write gate: one non-safety write per
+    tuned epoch — the next one waits for the retune the first one opened."""
+    rig = v3_rig(monkeypatch, **{const.CONF_POWER_MIN: 1300, const.CONF_POWER_MAX: 1325})
+    rig.mining(True, limit=1325)
+    rig.set_supply(100.0)
+
+    async def go():
+        await rig.setup()
+        await rig.tick()
+        await rig.tick()
+        assert cmds(rig, "set_miner_power") == [1300]  # the epoch's one write
+        # Anything else non-safety is held, not sent — the budget is spent.
+        await rig.ctl._command_power(1310)
+        assert cmds(rig, "set_miner_power") == [1300]
+        assert rig.ctl._op_target == 1310  # held as the target, not lost
+        await rig.tick()
+        assert cmds(rig, "set_miner_power") == [1300]  # the tick cannot buy a second write
+        await retune(rig)  # the tune our write opened finishes: a new epoch
+        await rig.ctl._command_power(1310)
+        assert cmds(rig, "set_miner_power") == [1300, 1310]  # delivered once the gate opened
+
+    run_async(go())
+
+
+def test_pinned_mode_keeps_the_safety_clamp_authority(monkeypatch):
+    """Set-and-hold bypasses the PID, not the safety paths: with the gate
+    closed (untuned) and the band pinned, a chip cap still forces Power Min
+    through adjust_power_limit."""
+    rig = v3_rig(monkeypatch, up=0, **{const.CONF_POWER_MIN: 1300, const.CONF_POWER_MAX: 1325})
+    rig.mining(True, limit=2000)  # believed far above the cap clamp: enough step to fire
+    rig.set_supply(104.0)
+
+    async def go():
+        await rig.setup()
+        await rig.tick()
+        assert rig.calls == []  # pinned + untuned: the gate holds everything
+        rig.coord.data["temperature_avg"] = 190.0  # chip cap engages (cap 185 °F)
+        await rig.tick()
+        assert cmds(rig, "set_miner_power") == []
+        assert cmds(rig, "set_power_limit") == [1300]  # the cap clamp: Power Min, ungated
+        assert rig.pid_state["power_command"]["regulation_error"] is None  # not a regulation error
+
+    run_async(go())
+
+
+# ------------------------------------------------------------- the write gate
+
+
+def test_the_gate_holds_non_safety_writes_while_tuning_but_not_safety_clamps(monkeypatch):
+    """up-freq-finish != 1 means the tuner owns the miner: a non-safety raise
+    waits; a safety clamp (chip cap) still flies."""
+    rig = v3_rig(monkeypatch, up=0)
+    rig.mining(True, limit=3000)
+    rig.set_supply(104.0)
+
+    async def go():
+        await rig.setup()
+        await rig.tick()
+        assert rig.calls == []  # the seed command is gated too
+        await rig.ctl._command_power(2800)  # non-safety: held, not sent
+        assert cmds(rig, "set_miner_power") == [] and cmds(rig, "set_power_limit") == []
+        assert rig.ctl._op_target == 2800  # held as the target, not lost
+        rig.coord.data["temperature_avg"] = 190.0  # chip cap engages (cap 185 °F)
+        await rig.tick()
+        assert cmds(rig, "set_power_limit") == [1000]  # the safety clamp: below every gate
 
     run_async(go())

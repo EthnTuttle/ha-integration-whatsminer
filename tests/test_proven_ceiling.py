@@ -146,7 +146,9 @@ def test_our_next_command_marks_a_clean_run_boundary(monkeypatch):
     ctl._note_fault(rig.clock.t, 3000, "error code 2320")  # ...now tainted
 
     async def go():
-        assert await ctl._set_power_limit(3100, why="test")
+        # safety-class: this fixture drives the boundary bookkeeping directly;
+        # the write gate is not what this test exercises.
+        assert await ctl._set_power_limit(3100, why="test", safety=True)
 
     run_async(go())
     # The tainted long hold was settled without credit at the boundary; the new

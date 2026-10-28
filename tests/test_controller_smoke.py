@@ -238,6 +238,12 @@ def test_full_stop_and_resume_cycle(rig):
         assert rig.shutoff["state"] == "running"
         assert all(c != "set_power_limit" for c, _ in rig.calls), rig.calls
         assert all(w <= 1000 for w in rig.power_calls()), rig.calls
+        # The 1000 W re-establish write opened a new tune (one non-safety
+        # write per tuned epoch, per the write gate); once it finishes, the
+        # PID may raise.
+        rig.coord.data["up_freq_finish"] = 0
+        await rig.tick()
+        rig.coord.data["up_freq_finish"] = 1
         await rig.run(2)
         assert any(w > 1000 for w in rig.power_calls()), rig.calls
 
@@ -574,9 +580,21 @@ def test_unknown_limit_after_resume_still_commands(rig):
         rig.coord.api.calls.clear()
         rig.mining(True, limit=0)  # firmware reports no limit yet
         rig.set_supply(85.0)
+        rig.coord.data["up_freq_finish"] = 1  # tuned: the held target re-establishes (v3)
         await rig.run(11)  # past the boot hold
-        limits = [w for c, w in rig.calls if c == "set_power_limit"]
-        assert limits and limits[0] > 1000
+        # Unknown limit after resume: the controller still commands power. The
+        # held target re-establishes through set.miner.power (one write per
+        # tuned epoch, per the write gate); the v2 ceiling move is itself a
+        # gated non-safety write, so v3 carries what it can.
+        for _ in range(6):
+            rig.coord.data["up_freq_finish"] = 0  # the write re-opened a tune
+            await rig.tick()
+            rig.coord.data["up_freq_finish"] = 1
+            await rig.run(4)
+            powers = [w for c, w in rig.calls if c in ("set_power_limit", "set_miner_power")]
+            if any(w > 1000 for w in powers):
+                break
+        assert powers and any(w > 1000 for w in powers), rig.calls
 
     run_async(go())
 
@@ -611,6 +629,7 @@ def test_timer_tick_before_first_coordinator_callback_seeds_first(monkeypatch):
     rig.mining(True, limit=4200)
     rig.coord.data["uptime"] = 86400
     rig.coord.data["wattage"] = 4200  # the draw the seed uses with no command on record
+    rig.coord.data["up_freq_finish"] = 1  # tuned: the ceiling raise is a gated non-safety write
 
     async def go():
         await rig.setup()

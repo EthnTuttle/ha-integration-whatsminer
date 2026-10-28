@@ -196,10 +196,15 @@ PROVEN_REFRESH_S = 3600.0
 SUPPLY_HOT_MARGIN_F = 5.0
 SUPPLY_HOT_WINDOW_S = STABLE_RUN_S
 # v3 power regulation. v2 adjust_power_limit restarts btminer on every
-# change; v3 set.miner.power moves the operating power with no restart, but
-# only once frequency tuning has finished (summary up-freq-finish 1).
-# Verified on the M64 2026-10-12: 1884 -> 1244 W in ~80 s, elapsed counting
-# (/home/ethan/network/power-test-20261012-220429.log).
+# change. v3 set.miner.power is applied without an immediate btminer
+# restart — but around a large step the mining process can recycle ~80 s
+# after the command (observed on firmware 20260908.12: the 1250 W step of
+# 2026-10-12 ramped 1884 -> 1244 W with elapsed counting, then elapsed
+# reset to 0 and working went false for ~45 s;
+# /home/ethan/network/power-test-20261012-220429.log, adjudicated in
+# /home/ethan/network/api-design-synthesis.md §1.2). Treat every power
+# write as potentially interrupting hashing briefly, and only send one
+# while tuning has finished (summary up-freq-finish 1).
 #
 # The v2 limit is a ceiling. It is raised only when the regulator asks for
 # more than the limit in force and the loop can take a boot at the ceiling
@@ -222,12 +227,24 @@ V3_POWER_RETRY_S = 1800.0
 V3_TRANSPORT_FAILS = 3
 # Hashrate collapse after a set.miner.power step: hashrate per watt below
 # this fraction of the pre-step value for V3_COLLAPSE_POLLS polls in a row,
-# within V3_COLLAPSE_WATCH_S of the step, is crash evidence at the pre-step
-# power, and the step is undone with adjust_power_limit. Live, a
-# 1884 -> 1244 W step kept ~85% of the pre-step TH/W through the ramp.
+# within V3_COLLAPSE_WATCH_S of the step, is crash evidence at the stepped-to
+# power. The step is NOT undone — an undoing adjust_power_limit would answer
+# a documented side effect of one write with a certain restart — the
+# collapse is reported (log, notification, power_regulation_error) and left
+# for the operator. Live, a 1884 -> 1244 W step kept ~85% of the pre-step
+# TH/W through the ramp.
 V3_COLLAPSE_FRAC = 0.5
 V3_COLLAPSE_POLLS = 3
 V3_COLLAPSE_WATCH_S = 1800.0
+# Set-and-hold ("pinned") mode: when the configured band collapses below the
+# default fine step (power_max - power_min < PINNED_BAND_W) there is no
+# meaningful regulation left — the synthesis verdict is that a PID inside a
+# sub-step band only re-issues tune-churning writes. The PID actuation is
+# bypassed for a fixed power_min target, reconciled at most once per tuned
+# epoch and only when the believed operating point differs by at least
+# PINNED_RECONCILE_W (see _pinned_step and the write gate).
+PINNED_BAND_W = 50
+PINNED_RECONCILE_W = 25
 # The telemetry power limit is only believed when it persists: it differs
 # from what we last sent for LIMIT_PERSIST_POLLS polls in a row and btminer
 # has been up BOOT_TRANSIENT_S. 2026-10-12: ~40 s after an uncommanded
@@ -454,6 +471,19 @@ class WhatsminerController:
         # (until, pre-step TH per W, pre-step power, stepped-to power).
         self._collapse_watch: tuple[float, float, int, int] | None = None
         self._collapse_polls = 0
+        # Set-and-hold: the configured band collapsed below the fine step, so
+        # the PID is bypassed for a fixed power_min target (see _pinned_step).
+        self._pinned = (self._power_max - self._power_min) < PINNED_BAND_W
+        # The write gate (see _gate_write): one non-safety power write per
+        # tuned epoch. _epoch_tuned_seen tracks the up-freq-finish edge that
+        # opens a new epoch; a restart (Elapsed regression) resets it too.
+        self._epoch_write_used = False
+        self._epoch_tuned_seen = False
+        self._gate_last_suppression: tuple[str, str] | None = None
+        # Notify-only regulation error (e.g. "collapse-observed-no-undo");
+        # _regulation_error_tpw is the TH/W it self-clears above.
+        self._regulation_error: str | None = None
+        self._regulation_error_tpw: float | None = None
         # External derate: _limit_commanded is the last limit WE sent
         # (adjust_power_limit); the telemetry-adoption rule must never touch
         # it — adopting a derated report as ours would mask the derate.
@@ -501,6 +531,7 @@ class WhatsminerController:
         self._publish_faults()
         self._publish_regulation()
         self._pid_state["control_mode"] = "idle"
+        self._pid_state["pid_mode"] = "pinned" if self._pinned else "pid"
 
     # ------------------------------------------------------------------ setup
 
@@ -1001,6 +1032,8 @@ class WhatsminerController:
             await self._save()
             _LOGGER.warning("Demand shutoff: powering the miner off — %s", decision.reason)
             try:
+                # Stop-class write: always exempt from the write gate.
+                self._gate_write(time(), safety=True, kind="stop")
                 await self.coordinator.api.power_off()
                 self._note_control_path()
                 self._mark_actuation()
@@ -1032,6 +1065,8 @@ class WhatsminerController:
                 level("Demand shutoff: powering the miner on — %s", decision.reason)
                 await self._save()
                 try:
+                    # Resume-edge power_on: always exempt from the write gate.
+                    self._gate_write(time(), safety=True, kind="stop")
                     await self.coordinator.api.power_on()
                     self._note_control_path()
                     self._mark_actuation()
@@ -1057,6 +1092,8 @@ class WhatsminerController:
         elif action == ds.REASSERT:
             _LOGGER.warning("Demand shutoff: miner started while we own a stop — reasserting power_off")
             try:
+                # Stop-class write: always exempt from the write gate.
+                self._gate_write(time(), safety=True, kind="stop")
                 await self.coordinator.api.power_off()
                 self._note_control_path()
                 self._mark_actuation()
@@ -1140,6 +1177,9 @@ class WhatsminerController:
 
     async def _send_lockout_power_off(self) -> None:
         self._last_lockout_power_off = time()
+        # Stop-class write (a latching safety stop): always exempt from the
+        # write gate.
+        self._gate_write(time(), safety=True, kind="stop")
         try:
             await self.coordinator.api.power_off()
             self._note_control_path()
@@ -1998,6 +2038,39 @@ class WhatsminerController:
     def _v3_backed_off(self, now: float) -> bool:
         return now < self._v3_retry_at
 
+    def _gate_write(self, now: float, *, safety: bool, kind: str) -> str | None:
+        """The single write gate every power/service command passes through.
+
+        Returns the suppression reason, or None when the write may go out.
+        Non-safety writes are suppressed unless tuning has finished
+        (up-freq-finish 1 on a fresh poll) and the one-non-safety-write
+        budget of the current tuned epoch is unspent. Safety clamps and
+        stop-class commands (power_off/lockout stops, resume-edge power_on)
+        pass unconditionally — the safety paths stay exactly as capable as
+        before the gate existed. Every suppression is INFO-logged (repeats
+        of the same reason are DEBUG, to keep the 30 s poll quiet).
+        """
+        if safety or kind == "stop":
+            return None
+        data = self.coordinator.data
+        if not self.coordinator.last_update_success or data.get("up_freq_finish") != 1:
+            reason = f"{kind} suppressed: miner not tuned (up-freq-finish {data.get('up_freq_finish')})"
+        elif self._epoch_write_used:
+            reason = f"{kind} suppressed: the one non-safety write of this tuned epoch is already spent"
+        else:
+            return None
+        if self._gate_last_suppression == (kind, reason):
+            _LOGGER.debug("Write gate: %s", reason)
+        else:
+            self._gate_last_suppression = (kind, reason)
+            _LOGGER.info("Write gate: %s", reason)
+        return reason
+
+    def _spend_epoch_write(self) -> None:
+        """A non-safety write went out: the epoch's budget is spent."""
+        self._epoch_write_used = True
+        self._gate_last_suppression = None
+
     def _note_btminer_restart(self, now: float) -> None:
         """A start edge or Elapsed regression: the operating power is the limit until re-commanded."""
         self._op_established = False
@@ -2005,6 +2078,8 @@ class WhatsminerController:
         self._op_in_force_at = now
         self._collapse_watch = None
         self._collapse_polls = 0
+        # A new boot is a new tuned epoch: the write budget re-arms.
+        self._epoch_write_used = False
 
     def _note_reported_limit(self, is_mining: bool, now: float) -> None:
         """Per fresh poll: the persistence rule for the telemetry limit, and tuning time."""
@@ -2041,6 +2116,15 @@ class WhatsminerController:
             self._untuned_since = None
         elif self._untuned_since is None:
             self._untuned_since = now
+        # Tuned-epoch edge: up-freq-finish leaving 1 (a new tune opened) and
+        # coming back to 1 re-arms the one-non-safety-write budget of the
+        # gate (_gate_write).
+        if data.get("up_freq_finish") == 1:
+            if not self._epoch_tuned_seen:
+                self._epoch_tuned_seen = True
+                self._epoch_write_used = False
+        else:
+            self._epoch_tuned_seen = False
 
     def _ceiling_ok(self, now: float, caps: frozenset[str], temp: float | None) -> str | None:
         """Why the ceiling may not be raised now (None: it may)."""
@@ -2059,7 +2143,8 @@ class WhatsminerController:
         return None
 
     async def _set_power_limit(
-        self, new_power: int, why: str = "limit", op_target: int | None = None
+        self, new_power: int, why: str = "limit", op_target: int | None = None,
+        safety: bool = False,
     ) -> bool:
         """v2 adjust_power_limit (restarts btminer). Returns True when sent.
 
@@ -2071,13 +2156,21 @@ class WhatsminerController:
         write also resets the last-limit-we-sent derate reference and marks a
         clean run boundary for hold witnessing (settle the hold in progress,
         clear the fault taint).
+
+        Every call passes the write gate (_gate_write): non-safety ceiling
+        moves are suppressed while the miner tunes and after the epoch's one
+        non-safety write; safety clamps (``safety=True``) always fly.
         """
         target = new_power if op_target is None else op_target
+        if self._gate_write(time(), safety=safety, kind="adjust_power_limit") is not None:
+            return False
         try:
             await self.coordinator.api.set_power_limit(new_power)
         except Exception as err:
             _LOGGER.error("Failed to set power limit to %dW: %s", new_power, err)
             return False
+        if not safety:
+            self._spend_epoch_write()
         self._mark_actuation()
         now = time()
         self._sent_limit = new_power
@@ -2127,6 +2220,17 @@ class WhatsminerController:
                 ceiling if new_power > ceiling else floor,
             )
             new_power = clamped
+        # The write gate owns both "still tuning" and the one-write-per-epoch
+        # budget (this is the funnel for what used to be the not-tuned hold
+        # below). A suppressed request is held as the target and delivered by
+        # the re-establish path once the gate opens.
+        if self._gate_write(now, safety=safety, kind="power") is not None:
+            # Only the target moves: _last_commanded_power stays what was
+            # delivered, so a safety clamp to the same value still fires.
+            self._op_target = new_power
+            if new_power != self._op_in_force:
+                self._op_established = False
+            return
         limit = self._limit_in_force()
         if limit is None or new_power > limit:
             why = self._ceiling_ok(now, caps, temp)
@@ -2146,26 +2250,21 @@ class WhatsminerController:
                 "Power regulation: %dW is above the %s limit and the ceiling is not raised (%s) — "
                 "adjust_power_limit", new_power, f"{limit}W" if limit is not None else "unknown", why,
             )
-            await self._set_power_limit(new_power, why="increase")
+            await self._set_power_limit(new_power, why="increase", safety=safety)
             return
         if self._v3_backed_off(now):
-            await self._set_power_limit(new_power, why="set.miner.power backed off")
+            await self._set_power_limit(new_power, why="set.miner.power backed off", safety=safety)
             return
         if not self._tuned(now):
+            # The gate already passed (tuned, budget unspent) but our own
+            # write's grace window is still open: hold the target briefly.
             if safety:
                 _LOGGER.info(
                     "Power regulation: %dW while the miner is still tuning — safety clamp via "
                     "adjust_power_limit (set.miner.power would only apply next boot)", new_power,
                 )
-                await self._set_power_limit(new_power, why="boot-window clamp")
+                await self._set_power_limit(new_power, why="boot-window clamp", safety=True)
                 return
-            if self._op_target != new_power:
-                _LOGGER.info(
-                    "Power regulation: miner still tuning (up-freq-finish %s) — %dW held until it finishes",
-                    self.coordinator.data.get("up_freq_finish"), new_power,
-                )
-            # Only the target moves: _last_commanded_power stays what was
-            # delivered, so a safety clamp to the same value still fires.
             self._op_target = new_power
             if new_power != self._op_in_force:
                 self._op_established = False
@@ -2175,6 +2274,8 @@ class WhatsminerController:
     async def _send_v3_power(self, new_power: int, now: float, why: str) -> bool:
         """set.miner.power; on rejection fall back to adjust_power_limit. True when v3 carried it."""
         data = self.coordinator.data
+        if self._gate_write(now, safety=False, kind="set.miner.power") is not None:
+            return False  # held as the target; retried when the gate opens
         # Only a step between two regulated powers is watched for a collapse:
         # after a restart the "previous" power is the ceiling transient, and
         # undoing to it would pin the miner at power_max.
@@ -2216,6 +2317,7 @@ class WhatsminerController:
             return False
         self._v3_transport_fails = 0
         self._v3_error = None
+        self._spend_epoch_write()
         if self._power_fallback_notified:
             self._power_fallback_notified = False
             persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_power_fallback")
@@ -2250,6 +2352,19 @@ class WhatsminerController:
         """
         try:
             data = self.coordinator.data
+            if self._regulation_error is not None:
+                # Self-clearing: the next successful stable read — hashing,
+                # drawing power, hashrate per watt back above the threshold
+                # the error was judged at.
+                try:
+                    err_h = float(data.get("hashrate_5s") or data.get("hashrate_1m") or 0)
+                    err_w = float(data.get("wattage") or 0)
+                except (TypeError, ValueError):
+                    err_h = err_w = 0.0
+                if is_mining and err_h > 0 and err_w > 0 and err_h / err_w >= (self._regulation_error_tpw or 0):
+                    _LOGGER.info("Power regulation error cleared — hashrate per watt recovered")
+                    self._regulation_error = None
+                    self._regulation_error_tpw = None
             watch = self._collapse_watch
             if watch is not None:
                 until, before_tpw, prev, stepped = watch
@@ -2270,32 +2385,31 @@ class WhatsminerController:
                         self._collapse_polls = 0
                         # The collapse is crash evidence at the stepped-to
                         # power: that is the power the miner failed to hold.
-                        # Note it BEFORE the undo write so that write's
-                        # clean-run boundary lets the recovery run witness a
-                        # new proven hold.
                         self._note_crash(stepped, now)
-                        # Undo the step, but never below the floor the evidence
-                        # just armed — an undo under the fresh crash floor
-                        # would be re-clamped upward on the next tick (a second
-                        # restart chasing the first).
-                        back = max(prev, stepped, self._crash_floor or 0)
+                        # Notify-only: the step is NOT undone. An undoing
+                        # adjust_power_limit would answer a documented side
+                        # effect of one dynamic write (a tuning event) with a
+                        # certain restart (synthesis: "setpoints in, overrides
+                        # out" — derates/collapses are verdicts, not servo
+                        # error). The operator sees the collapse and decides.
                         _LOGGER.warning(
                             "Hashrate collapsed after set.miner.power %dW (%.1f TH at %.0fW, under %.0f%% of "
-                            "the %.3f TH/kW before) — back to %dW with adjust_power_limit",
-                            stepped, hashrate, draw, 100 * V3_COLLAPSE_FRAC, 1000 * before_tpw, back,
+                            "the %.3f TH/kW before) — observed, not undone (no adjust_power_limit)",
+                            stepped, hashrate, draw, 100 * V3_COLLAPSE_FRAC, 1000 * before_tpw,
                         )
                         self._notify(
                             "power_collapse",
                             "Hashrate collapsed after a power reduction",
                             f"After set.miner.power lowered the miner from {prev} W to {stepped} W its "
-                            f"hashrate fell to {hashrate:.1f} TH at {draw:.0f} W. The controller sent "
-                            f"{back} W with adjust_power_limit (one restart) and raised its fault floor "
-                            f"to {self._crash_floor} W while the evidence is fresh. Press Reset Fault "
-                            "Memory to re-test lower powers.",
+                            f"hashrate fell to {hashrate:.1f} TH at {draw:.0f} W. The controller left "
+                            f"the power in place (an undoing power-limit write would restart mining) "
+                            f"and raised its fault floor to {self._crash_floor} W while the evidence "
+                            "is fresh. Press Reset Fault Memory to re-test lower powers.",
                         )
+                        self._regulation_error = "collapse-observed-no-undo"
+                        self._regulation_error_tpw = V3_COLLAPSE_FRAC * before_tpw
                         self._publish_faults()
-                        await self._set_power_limit(back, why="hashrate collapse")
-                        return True
+                        return False
             floor, ceiling = self._bounds(now)
             target = self._op_target
             tuned = self._tuned(now)
@@ -2305,6 +2419,12 @@ class WhatsminerController:
                 and target is not None and self._op_in_force is not None
                 and target < self._op_in_force - self._min_power_step_fine
             ):
+                # The limit write is a non-safety ceiling move: the write gate
+                # holds it while the miner tunes (up-freq-finish != 1). When
+                # gated, try again next tick — once tuning finishes, the
+                # re-establish path delivers the wanted power anyway.
+                if self._gate_write(now, safety=False, kind="adjust_power_limit") is not None:
+                    return False
                 _LOGGER.warning(
                     "Miner still tuning %.0f min after its last start or power change, running toward "
                     "%dW instead of %dW — sending %dW as the limit; the ceiling stays down for %.0f h",
@@ -2313,8 +2433,7 @@ class WhatsminerController:
                 )
                 self._untuned_since = None
                 self._ceiling_hold_until = now + V3_CEILING_BACKOFF_S
-                await self._set_power_limit(target, why="tuning timeout")
-                return True
+                return await self._set_power_limit(target, why="tuning timeout")
             if not tuned or caps:
                 return False  # caps: the PID step clamps this tick
             limit = self._limit_in_force()
@@ -2330,8 +2449,7 @@ class WhatsminerController:
                     )
                 else:
                     _LOGGER.info("Power regulation: lowering the ceiling %dW to Power Max %dW", limit, ceiling)
-                await self._set_power_limit(ceiling, op_target=want, why="ceiling lowered")
-                return True
+                return await self._set_power_limit(ceiling, op_target=want, why="ceiling lowered")
             if self._op_established:
                 return False
             if target is None:
@@ -2341,13 +2459,23 @@ class WhatsminerController:
             if target == self._op_in_force:
                 self._op_established = True  # already delivered since the last restart
                 return False
+            if self._pinned:
+                # The believed operating point: the sent power, else the limit
+                # in force (_power_in_force) — a fresh install knows the miner
+                # only by its limit, and that is what gets reconciled.
+                believed = self._power_in_force()
+                if believed is not None and abs(target - believed) < PINNED_RECONCILE_W:
+                    # Set-and-hold: inside the reconcile deadband the believed
+                    # operating point is close enough to the pinned target — a
+                    # write here would churn the tuner for <25 W.
+                    self._op_established = True
+                    return False
             if limit is not None and target >= limit:
                 self._op_established = True  # it runs at the limit, which is what we want
                 self._op_in_force = limit
                 return False
             if self._v3_backed_off(now):
-                await self._set_power_limit(target, why="re-establish, set.miner.power backed off")
-                return True
+                return await self._set_power_limit(target, why="re-establish, set.miner.power backed off")
             _LOGGER.info("Power regulation: tuning finished — re-commanding %dW", target)
             await self._send_v3_power(target, now, why="re-establish")
             return False
@@ -2365,6 +2493,7 @@ class WhatsminerController:
             "regulated_power_w": self._op_target,
             "established": self._op_established,
             "v3_error": self._v3_error,
+            "regulation_error": self._regulation_error,
             "v3_retry_at": _iso(self._v3_retry_at) if self._v3_backed_off(now) else None,
             "ceiling_held_until": _iso(self._ceiling_hold_until) if now < self._ceiling_hold_until else None,
         }
@@ -2412,11 +2541,114 @@ class WhatsminerController:
         step = min(SOFT_START_STEP_FRAC * span, max(self._kp * (target - projected), float(self._min_power_step)))
         return int(round(min(float(base) + step, self._pid.out_max)))
 
+    async def _pinned_step(
+        self, now: float, temp: float | None, caps: frozenset[str], summary: str, shutoff: ds.ShutoffState
+    ) -> None:
+        """Set-and-hold: the configured band collapsed below the fine step.
+
+        The PID is bypassed entirely — inside a sub-step band it could only
+        re-issue tune-churning writes for a few watts (the synthesis verdict:
+        the worst point on the tradeoff curve). The fixed target is Power
+        Min; the re-establish path in _regulation_tick reconciles toward it
+        through the tuned v3 path, at most once per tuned epoch (the write
+        gate) and only when the believed operating point differs by at least
+        PINNED_RECONCILE_W. Safety keeps its authority: a cap clamp below
+        the believed point still flies via adjust_power_limit with the same
+        step rule as the PID path's safety fire (the fine step is the most
+        permissive band, so it is at least as capable).
+        """
+        floor, ceiling = self._bounds(now)
+        target = max(min(self._power_min, ceiling), floor)
+        new_power = self._cap_clamp(caps) if caps else target
+        safety_engaged = bool(caps)
+        mode = "safety_cap" if caps else "pid"
+
+        # Demand lockout / shutoff dwell keep their telemetry labels (and the
+        # shutoff's own stops are unchanged); with the target already at
+        # Power Min there is nothing left for them to clamp.
+        if self._demand_entities and summary == ds.ALL_IDLE:
+            safety_engaged = True
+            if mode == "pid":
+                mode = "demand_lockout"
+            if not self._no_demand_logged:
+                _LOGGER.warning(
+                    "No demand from %s — pinned at %dW until a thermostat calls",
+                    ", ".join(self._demand_entities), target,
+                )
+                self._no_demand_logged = True
+        elif self._no_demand_logged:
+            _LOGGER.info("Demand returned — releasing no-demand lockout")
+            self._no_demand_logged = False
+        if shutoff.state == ds.DWELL:
+            mode = "dwell"
+            safety_engaged = True
+            new_power = min(floor, new_power) if caps else floor
+        self._pid_state["control_mode"] = mode
+
+        # Telemetry keeps publishing (pid_mode="pinned" marks the bypass).
+        if temp is not None:
+            if self._slope_last_pv is not None and self._slope_ewma_tau_s > 0:
+                prev_t, prev_v = self._slope_last_pv
+                dt = now - prev_t
+                if dt > 0:
+                    inst = (temp - prev_v) / (dt / 60.0)
+                    alpha = 1 - math.exp(-dt / self._slope_ewma_tau_s)
+                    self._slope_ewma = (
+                        inst if self._slope_ewma is None else self._slope_ewma + alpha * (inst - self._slope_ewma)
+                    )
+            self._slope_last_pv = (now, temp)
+        slope = self._supply_slope()
+        self._pid_state.update(
+            {
+                "error": (self._target() - float(temp)) if temp is not None else None,
+                "proportional": self._pid.proportional,
+                "integral": self._pid.integral,
+                "derivative": self._pid.derivative,
+                "external": self._pid.external,
+                "output": self._last_commanded_power if self._last_commanded_power is not None else new_power,
+                "requested_output": target,
+                "safety_engaged": safety_engaged,
+                "pv_slope": self._slope_ewma,
+                "supply_slope": None if slope is None else round(slope, 3),
+                "supply_projected": None if temp is None or slope is None else round(
+                    float(temp) + max(slope, 0.0) * PREDICT_HORIZON_S / 60.0, 2
+                ),
+                "predictive": None,
+                "soft_start": False,
+                "out_max_effective": ceiling,
+                "out_min_effective": floor,
+            }
+        )
+
+        # Hold the pinned target; _regulation_tick's re-establish path
+        # delivers it once tuned (write gate: at most once per epoch). The
+        # believed operating point is the sent power, else the limit in force
+        # (_power_in_force) — with nothing sent yet, an unknown operating
+        # point still warrants the one reconcile write.
+        self._op_target = target
+        believed = self._power_in_force()
+        if believed is None or abs(target - believed) >= PINNED_RECONCILE_W:
+            self._op_established = False
+
+        # Safety clamp actuation — the PID path's safety fire, minus the PID.
+        reference = self._reference(self.coordinator.data.get("wattage_limit") or 0)
+        if reference is None:
+            reference = -10_000  # no idea what it runs at: one command beats guessing
+        if caps and abs(new_power - reference) >= self._min_power_step_fine:
+            _LOGGER.info(
+                "Pinned: safety cap (%s) — clamping to %dW (was %dW)",
+                ", ".join(sorted(caps)), new_power, reference,
+            )
+            await self._command_power(new_power, safety=True, temp=temp, caps=caps)
+
     async def _run_pid_step(
         self, temp: float | None, caps: frozenset[str], summary: str, shutoff: ds.ShutoffState
     ) -> None:
         """Compute PID output and push to the miner if it changed meaningfully."""
         now = time()
+        if self._pinned:
+            await self._pinned_step(now, temp, caps, summary, shutoff)
+            return
         if temp is None:
             await self._run_fallback_step(caps, summary, now)
             return

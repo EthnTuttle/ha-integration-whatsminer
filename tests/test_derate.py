@@ -70,13 +70,18 @@ def run_async(coro):
 
 
 def _commanded_rig(monkeypatch, limit=2400, tuned=True):
-    """A rig whose controller already sent one limit (the derate reference)."""
+    """A rig whose controller already sent one limit (the derate reference).
+
+    The write goes out as a safety-class command: this fixture establishes
+    the derate reference directly, whether or not the miner is tuning — the
+    write gate is not what these tests exercise.
+    """
     rig = Rig(monkeypatch)
     if tuned:
         rig.coord.data["up_freq_finish"] = 1
 
     async def go():
-        assert await rig.ctl._set_power_limit(limit, why="test")
+        assert await rig.ctl._set_power_limit(limit, why="test", safety=True)
 
     run_async(go())
     return rig

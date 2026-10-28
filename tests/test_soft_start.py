@@ -27,16 +27,35 @@ HOLD = controller_mod.RESUME_BOOT_HOLD_S
 HOT_WINDOW = controller_mod.SUPPLY_HOT_WINDOW_S
 
 
-def v3_plant(plant):
+def v3_plant(plant, retune_s=None):
     """v2.0: set.miner.power moves the operating power restart-free.
 
     The plant's heat and the controller's belief follow the operating power;
     the reported v2 wattage limit stays the ceiling until adjust_power_limit
     moves it (every adjust_power_limit restarts btminer, which runs at the
     limit until a v3 write re-establishes the operating power).
+
+    The write gate gives every dynamic write one tuned epoch: each
+    set.miner.power re-opens frequency search (up-freq-finish drops), and
+    tuning finishes ``retune_s`` later (default: one poll — the replays
+    exercise the soft-start/predictive mechanics, not epoch cadence).
     """
     rig = plant.rig
+    if retune_s is None:
+        retune_s = loop_plant.POLL_S
+    retune_until = 0.0
     plant.power = float(plant.limit)  # operating power; == ceiling while not regulated
+
+    def retune_state():
+        rig.coord.data["up_freq_finish"] = 1 if rig.clock.t >= retune_until else 0
+
+    orig_advance = plant.advance
+
+    def advance(dt=loop_plant.POLL_S, sub=5.0):
+        orig_advance(dt, sub)
+        retune_state()
+
+    plant.advance = advance
 
     def draw(t):
         return plant.power if plant.hashing and t >= plant.power_from else 0.0
@@ -58,9 +77,12 @@ def v3_plant(plant):
         plant.power = float(plant.limit)
 
     async def set_miner_power(watts):
+        nonlocal retune_until
         plant.commands.append((rig.clock.t, "set_miner_power", int(watts)))
         rig.coord.api.calls.append(("set_miner_power", int(watts)))
         plant.power = float(int(watts))  # no restart
+        retune_until = rig.clock.t + retune_s  # the write re-opened the tune
+        retune_state()
         _set_draw()
 
     plant._set_draw = _set_draw
@@ -352,6 +374,9 @@ def test_1200w_power_min_raises_the_crash_floor_once_cool(monkeypatch):
         await rig.tick()
         assert limits(rig) == [1200], rig.calls  # the cap forces Power Min, not the floor
         rig.coord.api.calls.clear()
+        # Tuning finishes: the recovery raise above the armed crash floor is a
+        # gated non-safety write, so it needs the tuned epoch open.
+        rig.coord.data["up_freq_finish"] = 1
         await crash_loop(rig, miner, 120, supply=123.0, until=lambda: miner.limit >= 1400)
         faults = rig.pid_state["faults"]
         assert faults["crash_floor_w"] == 1200 + controller_mod.CRASH_STEP_W, faults

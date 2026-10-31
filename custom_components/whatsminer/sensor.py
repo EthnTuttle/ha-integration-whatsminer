@@ -417,8 +417,13 @@ async def async_setup_entry(
 
     entities = []
 
-    # Add main miner sensors
+    # Add main miner sensors. expected_hashrate is skipped on firmware that
+    # only ever reports a sentinel for it (flag set by the coordinator) —
+    # otherwise the entity would sit at unknown forever.
+    expected_supported = coordinator.data.get("_expected_hashrate_supported", True)
     for sensor_key, description in SENSOR_TYPES.items():
+        if sensor_key == "expected_hashrate" and not expected_supported:
+            continue
         entities.append(
             WhatsminerSensor(
                 coordinator=coordinator,
@@ -462,7 +467,19 @@ async def async_setup_entry(
             always_report=True,
         )
     )
+    # PID internals tied to unconfigured features are skipped: with no
+    # demand entities or no slope EWMA tau, their value is None by design and
+    # the entity would sit at unknown forever.
+    controller = data.get("controller")
+    pid_skip: set[str] = set()
+    if controller is not None:
+        if not controller.pv_slope_enabled:
+            pid_skip.add("pv_slope")
+        if not controller.demand_tracking_enabled:
+            pid_skip.add("demand_index")
     for state_key, description in PID_INTERNAL_SENSORS.items():
+        if state_key in pid_skip:
+            continue
         entities.append(
             WhatsminerPIDSensor(
                 coordinator=coordinator,

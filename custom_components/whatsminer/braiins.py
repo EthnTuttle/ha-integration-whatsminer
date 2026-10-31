@@ -34,6 +34,9 @@ SCAN_INTERVAL = timedelta(minutes=5)
 REQUEST_TIMEOUT_S = 20
 # Gap between the two requests of one poll, to stay under the documented rate.
 REQUEST_GAP_S = 2.0
+# Transient server-side failures (e.g. HTTP 500 on the pool side) get one
+# retry after this delay before the poll is failed.
+RETRY_DELAY_S = 30.0
 
 WORKER_STATES = ["ok", "low", "off", "dis"]
 
@@ -213,14 +216,26 @@ class BraiinsPoolCoordinator(DataUpdateCoordinator):
         self._worker_warned = False
 
     async def _async_update_data(self) -> dict[str, Any]:
-        try:
-            profile_raw = await self.client.profile()
-            await asyncio.sleep(REQUEST_GAP_S)
-            workers_raw = await self.client.workers()
-        except BraiinsPoolAuthError as err:
-            raise UpdateFailed(f"Braiins Pool rejected the access token: {err}") from err
-        except BraiinsPoolError as err:
-            raise UpdateFailed(f"Braiins Pool unreachable: {err}") from err
+        # One in-poll retry rides out transient pool-side 5xx blips; auth
+        # failures are permanent until the token changes, so no retry there.
+        last_err: BraiinsPoolError | None = None
+        for attempt in range(2):
+            try:
+                profile_raw = await self.client.profile()
+                await asyncio.sleep(REQUEST_GAP_S)
+                workers_raw = await self.client.workers()
+                break
+            except BraiinsPoolAuthError as err:
+                raise UpdateFailed(f"Braiins Pool rejected the access token: {err}") from err
+            except BraiinsPoolError as err:
+                last_err = err
+                if attempt == 0:
+                    _LOGGER.info(
+                        "Braiins Pool poll failed (%s) — retrying in %.0fs", err, RETRY_DELAY_S
+                    )
+                    await asyncio.sleep(RETRY_DELAY_S)
+        else:
+            raise UpdateFailed(f"Braiins Pool unreachable: {last_err}") from last_err
         profile = parse_profile(profile_raw)
         worker = parse_workers(workers_raw, self.worker)
         if worker["worker"] is None and worker["workers"] and not self._worker_warned:

@@ -655,6 +655,26 @@ def test_expected_hashrate_sentinels(summary, expected):
     assert coord._parse_summary(summary)["expected_hashrate"] == expected
 
 
+def test_expected_hashrate_support_flag():
+    coord = coordinator_mod.WhatsminerCoordinator(None, "127.0.0.1", "admin", 4028, 30, "m64")
+    # Sentinel present: this firmware will never report a target rate.
+    assert coord._parse_summary({"Msg": {"Factory GHS": -1}})["_expected_hashrate_supported"] is False
+    # Real value: supported.
+    assert coord._parse_summary({"Msg": {"Factory GHS": 40_000}})["_expected_hashrate_supported"] is True
+    # Key absent (tuning-up boot): flag untouched.
+    assert coord._parse_summary({"Msg": {}}).get("_expected_hashrate_supported") is None
+
+
+def test_efficiency_gated_below_min_hashrate():
+    coord = coordinator_mod.WhatsminerCoordinator(None, "127.0.0.1", "admin", 4028, 30, "m64")
+    # Near-zero hashrate at full power: no bogus J/TH.
+    data = coord._parse_summary({"Msg": {"Power": 1150.0, "MHS av": 2_000_000}})
+    assert "efficiency" not in data
+    # Real mining rate: calculated.
+    data = coord._parse_summary({"Msg": {"Power": 1150.0, "MHS av": 40_000_000}})
+    assert data["efficiency"] == round(1150.0 / 40.0, 2)
+
+
 def test_env_temp_parsed_from_summary():
     coord = coordinator_mod.WhatsminerCoordinator(None, "127.0.0.1", "admin", 4028, 30, "m64")
     assert abs(coord._parse_summary({"Msg": {"Env Temp": 33.5}})["env_temp"] - 92.3) < 0.1

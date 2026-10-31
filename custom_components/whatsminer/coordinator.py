@@ -47,6 +47,11 @@ V3_MIN_FIRMWARE_DATE = 20241101
 # the entry reloads (or a v3 command fails).
 V3_REPROBE_S = 60.0
 
+# Below this mining rate the efficiency ratio (W / TH/s) is numerically
+# meaningless — near-zero hashrate while still drawing power blows it up —
+# so the value is withheld (sensor goes unknown) instead of recorded.
+MIN_EFFICIENCY_HASHRATE_TH = 5.0
+
 DEFAULT_DATA = {
     "hostname": None,
     "mac": None,
@@ -665,6 +670,16 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         elif "Factory GHS" in summary:
             expected = (summary.get("Factory GHS") or 0) / 1_000
         result["expected_hashrate"] = expected if expected and expected > 0 else None
+        # Firmware capability flag: a summary key carrying a "-1"/0 sentinel
+        # means this firmware never reports an expected rate (observed on the
+        # 2026 firmware that ships "Factory GHS": -1) — the sensor would sit
+        # at unknown forever, so sensor.py skips creating it. A missing key
+        # (tuning-up right after boot, or older undocumented summaries) says
+        # nothing, and a real value flips the flag back.
+        if expected is not None and expected > 0:
+            result["_expected_hashrate_supported"] = True
+        elif "Target MHS" in summary or "Factory GHS" in summary:
+            result["_expected_hashrate_supported"] = False
         
         # Power (Whatsminer specific fields)
         result["wattage"] = summary.get("Power", 0)
@@ -684,8 +699,12 @@ class WhatsminerCoordinator(DataUpdateCoordinator):
         env_c = summary.get("Env Temp")
         result["env_temp"] = c_to_f(env_c) if env_c else None
         
-        # Calculate efficiency (J/TH = W / (TH/s))
-        if result.get("wattage", 0) > 0 and result.get("hashrate", 0) > 0:
+        # Calculate efficiency (J/TH = W / (TH/s)). Meaningless below a real
+        # mining rate: during spin-up and fault episodes the numerator holds
+        # ~1100W while the divisor collapses toward zero, which produced
+        # 500-1400 J/TH spikes in the recorder. Key stays absent (sensor shows
+        # unknown) below the gate instead of reporting a bogus ratio.
+        if result.get("wattage", 0) > 0 and result["hashrate"] >= MIN_EFFICIENCY_HASHRATE_TH:
             result["efficiency"] = round(result["wattage"] / result["hashrate"], 2)
         
         # Fans (Whatsminer specific)

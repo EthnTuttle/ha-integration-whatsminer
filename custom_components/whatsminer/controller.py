@@ -1481,6 +1481,16 @@ class WhatsminerController:
 
     # ------------------------------------------------------- demand snapshot
 
+    @property
+    def pv_slope_enabled(self) -> bool:
+        """EWMA supply-slope tracking is configured (tau > 0)."""
+        return self._slope_ewma_tau_s > 0
+
+    @property
+    def demand_tracking_enabled(self) -> bool:
+        """Thermostat/demand entities are configured."""
+        return bool(self._demand_entities)
+
     def _demand_snapshot(self, now: float) -> tuple[str, list[str], list[str], float | None]:
         """Strict thermostat classification. Returns (summary, calling, unknown, index)."""
         if not self._demand_entities:

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.1.1
+
+### Fixed
+
+- Efficiency (J/TH) is no longer computed below 5 TH/s. During spin-up and
+  fault episodes the miner still draws ~1100 W while the hashrate collapses
+  toward zero, which recorded 500–1400 J/TH spikes; the sensor now shows
+  unknown below the gate instead of a bogus ratio
+- Diagnostics for unconfigured features no longer mint forever-unknown
+  entities: PID PV Slope and PID Demand Index sensors are only created when
+  slope EWMA (`pid_slope_ewma_tau_s` > 0) or demand entities are configured,
+  and Expected Hashrate is skipped on firmware that only reports a sentinel
+  for it (e.g. `Factory GHS: -1` on the 2026 firmware line)
+- Braiins Pool: a transient poll failure (pool-side HTTP 5xx, timeouts) is
+  retried once after 30 s before the coordinator reports the update as
+  failed
+
+Existing entities for the sensors that are no longer created stay in the
+registry as stale; remove them from Settings → Devices & Services if you do
+not re-enable the underlying feature.
+
 ## 2.0.0
 
 The restart-era machinery comes out. 1.10–1.14 layered on daily plans, trim

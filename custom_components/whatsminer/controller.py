@@ -2480,10 +2480,25 @@ class WhatsminerController:
                     # write here would churn the tuner for <25 W.
                     self._op_established = True
                     return False
-            if limit is not None and target >= limit:
+            if limit is not None and limit == target:
                 self._op_established = True  # it runs at the limit, which is what we want
                 self._op_in_force = limit
                 return False
+            if limit is not None and limit < target:
+                # The hardware limit is *below* what the bounds now allow —
+                # e.g. a fault ceiling the miner still holds after the fault
+                # memory was reset, or a lowered ceiling the bounds have since
+                # reopened. Leaving it treats the stale limit as intended and
+                # strands the miner there while the PID asks for more (live
+                # 2026-11-14: limit 1173 W, bounds 1300-1325 W, hashrate flat
+                # at 18.5 TH/s with four zones calling for heat). Raise it.
+                _LOGGER.info(
+                    "Power regulation: raising the stranded limit %dW to %dW",
+                    limit, target,
+                )
+                return await self._set_power_limit(
+                    target, op_target=target, why="stranded limit"
+                )
             if self._v3_backed_off(now):
                 return await self._set_power_limit(target, why="re-establish, set.miner.power backed off")
             _LOGGER.info("Power regulation: tuning finished — re-commanding %dW", target)

@@ -1122,3 +1122,26 @@ def test_the_gate_holds_non_safety_writes_while_tuning_but_not_safety_clamps(mon
         assert cmds(rig, "set_power_limit") == [1000]  # the safety clamp: below every gate
 
     run_async(go())
+
+
+def test_a_stranded_limit_below_the_reopened_bounds_is_raised(monkeypatch):
+    """2026-11-14: fault memory reset reopened the bounds, but the miner still
+    held the old 1173 W limit; the controller adopted it as intended and the
+    miner sat at 18.5 TH/s while the PID asked for 1300 W."""
+    rig = v3_rig(
+        monkeypatch,
+        store={"power_limit_w": 1173, "regulated_power_w": 1300},
+        power_min=1300,
+        power_max=1325,
+    )
+    rig.mining(True, limit=1173)
+    rig.coord.data["wattage"] = 1170
+    rig.set_supply(84.0)  # far below target: the PID wants full power
+
+    async def go():
+        await rig.setup()
+        await rig.tick()
+        assert cmds(rig, "set_power_limit") == [1300]
+        assert rig.ctl._op_target == 1300
+
+    run_async(go())

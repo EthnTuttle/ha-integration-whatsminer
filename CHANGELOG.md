@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.1.2
+
+### Fixed
+
+- A power limit left stranded below the reopened fault bounds is now raised.
+  After Reset Fault Memory the bounds open back to Power Min/Power Max, but
+  the miner keeps holding the old derated limit (live 2026-11-14: 1173 W
+  held, bounds 1300-1325 W). The regulator treated `target >= limit` as
+  "running at the limit, which is what we want" and never wrote, so the
+  miner sat at 18.5 TH/s while the PID asked for 1300 W and four heating
+  zones were calling. A limit equal to the target still counts as delivered;
+  a limit *below* it now sends one adjust_power_limit to the wanted power
+  (btminer restarts, as every v2 limit write does).
+- Regression test: `test_a_stranded_limit_below_the_reopened_bounds_is_raised`
+
 ## 2.1.1
 
 ### Fixed

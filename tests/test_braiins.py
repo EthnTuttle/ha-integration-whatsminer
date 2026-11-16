@@ -165,6 +165,7 @@ class FakeClient:
 
 def _coordinator(monkeypatch, client, worker="heater"):
     monkeypatch.setattr(braiins, "REQUEST_GAP_S", 0)
+    monkeypatch.setattr(braiins, "RETRY_DELAYS_S", (0, 0))
     return braiins.BraiinsPoolCoordinator(object(), client, worker, "heatcore")
 
 
@@ -184,9 +185,34 @@ def test_coordinator_auth_error_is_update_failed(monkeypatch):
 
 
 def test_coordinator_network_error_is_update_failed(monkeypatch):
-    coord = _coordinator(monkeypatch, FakeClient(fail=braiins.BraiinsPoolError("timeout")))
+    client = FakeClient(fail=braiins.BraiinsPoolError("timeout"))
+    coord = _coordinator(monkeypatch, client)
     with pytest.raises(UpdateFailed, match="unreachable"):
         run_async(coord._async_update_data())
+    assert client.calls == ["profile"] * 3  # first try + two retries
+
+
+class FlakyClient(FakeClient):
+    """Fails the first ``failures`` profile reads, then behaves."""
+
+    def __init__(self, failures, **kw):
+        super().__init__(**kw)
+        self._left = failures
+
+    async def profile(self):
+        self.calls.append("profile")
+        if self._left > 0:
+            self._left -= 1
+            raise braiins.BraiinsPoolError("HTTP 500 from /accounts/profile/json/btc/")
+        return self._profile
+
+
+def test_a_transient_pool_error_is_retried_and_recovers(monkeypatch):
+    client = FlakyClient(1)
+    coord = _coordinator(monkeypatch, client)
+    data = run_async(coord._async_update_data())
+    assert data["profile"]["hash_rate_5m"] == pytest.approx(103.0)
+    assert client.calls == ["profile", "profile", "workers"]
 
 
 def test_coordinator_warns_once_when_no_worker_matches(monkeypatch, caplog):

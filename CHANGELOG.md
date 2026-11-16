@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.3
+
+### Fixed
+
+- Braiins Pool polling now retries twice (30 s, then 60 s backoff) before
+  failing a poll. A single 30 s retry still lost polls to the pool's 5xx
+  blips and DNS timeouts (2026-11-05, -08, -11). Auth failures remain
+  immediate: a rejected token does not recover on retry.
+- Tests: transient 500 recovers on retry; exhausted retries make exactly
+  three attempts.
+
 ## 2.1.2
 
 ### Fixed

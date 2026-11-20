@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.1.4
+
+### Fixed
+
+- External-derate detection no longer mistakes this firmware's `Power Limit`
+  report for a self-derate. The field tracks the v3 **operating power** plus
+  ~2% (live 2026-11-19/20: operating 1300 W reports 1326, operating 2500 W
+  reports 2550), not the v2 ceiling we last sent. Comparing it against the
+  ceiling made every large v3 step look like "firmware derated itself",
+  noting a fault and clamping the ceiling to operating+250 W — this is what
+  capped the miner at 1.3 kW / 45 TH/s while it was capable of 109 TH/s at
+  2.5 kW. A report within `DERATE_MIN_DELTA_W` below the operating power up
+  to +5% above it is treated as the commanded operating point, not a derate;
+  a real derate below the operating power still arms.
+- Tests: operating-power report is not a derate; a true derate below the
+  operating power still arms.
+
 ## 2.1.3
 
 ### Fixed

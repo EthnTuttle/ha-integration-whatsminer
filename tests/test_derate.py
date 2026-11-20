@@ -226,3 +226,27 @@ def test_telemetry_adoption_never_masks_the_derate(monkeypatch):
     assert rig.ctl._external_derate is True
     assert rig.ctl._fault_power == 1224  # the derated-TO level, not the 3200 we sent
     assert rig.ctl._bounds(rig.clock.t)[1] == 1224 + C.PROVEN_MARGIN_W
+
+
+def test_reporting_the_operating_power_is_not_a_derate(monkeypatch):
+    """2026-11-19/20: "Power Limit" mirrors the v3 operating power (+~2%),
+    not the v2 ceiling. Commanded 5000 W ceiling, operating 2500 W, report
+    2550 W — the firmware was doing exactly as told, but the detector called
+    it a derate and clamped the ceiling to 1576 W."""
+    rig = _commanded_rig(monkeypatch, limit=5000)
+    rig.ctl._last_commanded_power = 2500
+    rig.coord.data["wattage_limit"] = 2550  # +2% of the operating power
+    _past_the_post_write_window(rig)
+    _polls(rig, 8)
+    assert rig.ctl._external_derate is False
+    assert rig.ctl._fault_power is None
+
+
+def test_a_real_derate_below_the_operating_power_still_arms(monkeypatch):
+    rig = _commanded_rig(monkeypatch, limit=5000)
+    rig.ctl._last_commanded_power = 2500
+    rig.coord.data["wattage_limit"] = 1224  # the 2026-10-17 signature
+    _past_the_post_write_window(rig)
+    _polls(rig, 5)
+    assert rig.ctl._external_derate is True
+    assert rig.ctl._fault_power == 1224

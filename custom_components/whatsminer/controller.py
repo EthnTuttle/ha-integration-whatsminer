@@ -263,6 +263,11 @@ BOOT_TRANSIENT_S = 120.0
 # converges onto what the hardware demonstrated (the 2026-10-17/18 1684-vs-
 # 1224 livelock came from noting the refused value instead).
 DERATE_MIN_DELTA_W = 100
+# This firmware reports "Power Limit" as the v3 operating power plus ~2%
+# (live 2026-11-19/20: operating 1300 W → reported 1326, operating 2500 W →
+# reported 2550), not as the v2 ceiling we last sent. A report within this
+# fraction of the operating power is the miner doing as told, not a derate.
+DERATE_REPORT_TOL_FRAC = 0.05
 DERATE_POST_WRITE_S = 90.0
 DERATE_MIN_S = 120.0
 DERATE_POLLS = 3
@@ -1759,7 +1764,14 @@ class WhatsminerController:
             self._derate_candidate_since = None
             self._derate_candidate_polls = 0
             return
-        if reported < commanded - DERATE_MIN_DELTA_W:
+        operating = self._last_commanded_power
+        matches_operating = (
+            operating is not None
+            and operating - DERATE_MIN_DELTA_W
+            <= reported
+            <= operating * (1 + DERATE_REPORT_TOL_FRAC)
+        )
+        if not matches_operating and reported < commanded - DERATE_MIN_DELTA_W:
             self._derate_match_polls = 0
             if self._derate_candidate_since is None:
                 self._derate_candidate_since = now

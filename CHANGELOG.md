@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.5
+
+### Fixed
+
+- The external-derate detector no longer fires during a v3 operating-power
+  ramp. A `set.miner.power` step takes minutes to land, and the firmware keeps
+  reporting the old, lower power meanwhile (live 2026-11-20: 3426 W commanded,
+  reported 2489 W four minutes in, 2655 W and still rising a minute later).
+  A low report within 15 minutes of any command of ours is treated as the
+  ramp, not a derate. Persistent true derates still arm once the grace
+  expires.
+
 ## 2.1.4
 
 ### Fixed

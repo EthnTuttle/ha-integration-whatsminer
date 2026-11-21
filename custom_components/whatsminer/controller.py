@@ -269,6 +269,11 @@ DERATE_MIN_DELTA_W = 100
 # fraction of the operating power is the miner doing as told, not a derate.
 DERATE_REPORT_TOL_FRAC = 0.05
 DERATE_POST_WRITE_S = 90.0
+# A v3 operating-power step ramps over minutes: the firmware keeps reporting
+# the old (lower) power until the ramp lands (live 2026-11-20: 3426 W
+# commanded, reported 2489 W ~4 min in, then 2655 W and rising). Do not call
+# a low report a derate within this window after any command of ours.
+DERATE_RAMP_GRACE_S = 900.0
 DERATE_MIN_S = 120.0
 DERATE_POLLS = 3
 # After a user's Mining Control OFF, ignore lingering "mining" readings for
@@ -1759,6 +1764,7 @@ class WhatsminerController:
         if (
             not is_mining or commanded is None or reported <= 0
             or now - self._limit_commanded_at < DERATE_POST_WRITE_S
+            or now - self._last_command_time < DERATE_RAMP_GRACE_S
             or not self._tuned(now)
         ):
             self._derate_candidate_since = None

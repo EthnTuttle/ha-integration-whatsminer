@@ -94,7 +94,8 @@ def _polls(rig, n, gap_s=40.0, mining=True):
 
 
 def _past_the_post_write_window(rig):
-    rig.clock.t += C.DERATE_POST_WRITE_S + 1  # the post-write window gates, not counts
+    # The post-write window and the ramp grace gate, rather than count.
+    rig.clock.t += max(C.DERATE_POST_WRITE_S, C.DERATE_RAMP_GRACE_S) + 1
 
 
 # ------------------------------------------------------------- it arms
@@ -153,9 +154,10 @@ def test_two_polls_or_a_short_window_never_arms(monkeypatch):
 def test_the_post_write_window_starts_no_candidate(monkeypatch):
     rig = _commanded_rig(monkeypatch)
     rig.coord.data["wattage_limit"] = 1000
-    _polls(rig, 2, gap_s=30.0)  # 30 s and 60 s after our write
+    gap = max(C.DERATE_POST_WRITE_S, C.DERATE_RAMP_GRACE_S)
+    _polls(rig, 2, gap_s=gap / 3)  # still inside the post-write/ramp window
     assert rig.ctl._derate_candidate_since is None
-    _polls(rig, 1, gap_s=31.0)  # 91 s: the window has closed, evidence starts here
+    _polls(rig, 1, gap_s=gap / 3 + 1)  # the window has closed, evidence starts here
     assert rig.ctl._derate_candidate_since == rig.clock.t
 
 
@@ -212,7 +214,7 @@ def test_telemetry_adoption_never_masks_the_derate(monkeypatch):
     """
     rig = _commanded_rig(monkeypatch, limit=3200)
     rig.ctl._proven_max = None
-    rig.clock.t += 700.0  # past the post-write window and the sent-limit window
+    rig.clock.t += C.DERATE_RAMP_GRACE_S + 100.0  # past the ramp/post-write windows
     rig.coord.data["wattage_limit"] = 1224  # firmware derates itself, and persists
     for _ in range(3):
         rig.clock.t += 30.0
@@ -250,3 +252,15 @@ def test_a_real_derate_below_the_operating_power_still_arms(monkeypatch):
     _polls(rig, 5)
     assert rig.ctl._external_derate is True
     assert rig.ctl._fault_power == 1224
+
+
+def test_a_report_still_ramping_after_our_command_is_not_a_derate(monkeypatch):
+    """2026-11-20: 3426 W commanded, the ramp reported 2489 W four minutes in
+    and was still climbing. That is the ramp, not a derate."""
+    rig = _commanded_rig(monkeypatch, limit=5000)
+    rig.ctl._last_commanded_power = 3426
+    rig.coord.data["wattage_limit"] = 2489
+    rig.clock.t += 240  # 4 min after the write: inside the ramp grace
+    _polls(rig, 6)
+    assert rig.ctl._external_derate is False
+    assert rig.ctl._fault_power is None

@@ -4,7 +4,7 @@ Ceiling: Power Max, unless fault evidence (error code, external derate,
 hashrate-collapse undo, hold taint) is fresh (FAULT_TTL_S) — then the highest
 witnessed hold (else the power that faulted, else Power Min) + PROVEN_MARGIN_W,
 clamped to [Power Min, Power Max]. Floor: Power Min, or the last uncommanded
-short run's power + CRASH_STEP_W while fresh. Inversion: the ceiling wins.
+low-end short run's power + CRASH_STEP_W while fresh. Inversion: the ceiling wins.
 
 A mining run holding one power for STABLE_RUN_S witnesses it as proven_max,
 unless the hold is tainted or the miner is externally derated; the proof
@@ -224,10 +224,10 @@ def test_the_cap_clamps_into_the_configured_bounds(monkeypatch):
 def test_evidence_expires_after_seven_days(monkeypatch):
     rig = Rig(monkeypatch)
     ctl = rig.ctl
-    ctl._note_crash(2000, rig.clock.t)
+    ctl._note_crash(1200, rig.clock.t)
     ctl._note_fault(rig.clock.t, 3000, "error code 2320")
-    assert ctl._bounds(rig.clock.t) == (2250, 3250)
-    assert ctl._bounds(rig.clock.t + TTL - 60) == (2250, 3250)  # still armed
+    assert ctl._bounds(rig.clock.t) == (1450, 3250)
+    assert ctl._bounds(rig.clock.t + TTL - 60) == (1450, 3250)  # still armed
     assert ctl._bounds(rig.clock.t + TTL + 60) == (1000, 5000)  # disarmed
 
 
@@ -235,7 +235,7 @@ def test_on_inversion_the_ceiling_wins_and_logs_once(monkeypatch, caplog):
     rig = Rig(monkeypatch)
     ctl = rig.ctl
     caplog.set_level(logging.WARNING, logger="wm.controller")
-    ctl._note_crash(3600, rig.clock.t)  # crash floor 3850...
+    ctl._note_crash(1400, rig.clock.t)  # low-end crash floor 1650...
     ctl._note_fault(rig.clock.t, 1224, "external derate to 1224W (commanded 2400W)")
     # ...over a 1474 W ceiling: the ceiling wins down to Power Min (protect the hardware).
     assert ctl._bounds(rig.clock.t) == (1474, 1474)
@@ -323,14 +323,14 @@ def test_a_crash_raises_the_floor_while_fresh(monkeypatch):
     ctl = rig.ctl
     ctl._note_crash(None, rig.clock.t)  # unknown power: logged only, not evidence
     assert ctl._crash_floor is None
-    ctl._note_crash(2000, rig.clock.t)
-    assert ctl._crash_floor == 2250
+    ctl._note_crash(1200, rig.clock.t)
+    assert ctl._crash_floor == 1450
     assert ctl._crash_at == rig.clock.t
     assert "whatsminer_crash_floor" in [k for k, _, _ in pn.created]
-    assert _faults(ctl, rig)["floor_w"] == 2250
-    ctl._note_crash(1200, rig.clock.t)  # a lower crash never lowers the floor
-    assert ctl._crash_floor == 2250
-    assert ctl._bounds(rig.clock.t + TTL - 60)[0] == 2250  # fresh inside the TTL
+    assert _faults(ctl, rig)["floor_w"] == 1450
+    ctl._note_crash(1000, rig.clock.t)  # a lower crash never lowers the floor
+    assert ctl._crash_floor == 1450
+    assert ctl._bounds(rig.clock.t + TTL - 60)[0] == 1450  # fresh inside the TTL
     assert ctl._bounds(rig.clock.t + TTL + 60)[0] == 1000  # expired
 
 
@@ -340,7 +340,7 @@ def test_a_crash_raises_the_floor_while_fresh(monkeypatch):
 def test_reset_fault_memory_forgets_everything(monkeypatch):
     rig = Rig(monkeypatch)
     ctl = rig.ctl
-    ctl._note_crash(3600, rig.clock.t)
+    ctl._note_crash(1400, rig.clock.t)
     ctl._note_fault(rig.clock.t, 1224, "external derate to 1224W (commanded 2400W)")
     ctl._proven_max, ctl._proven_max_at = 3000, rig.clock.t - 100
     ctl._external_derate = True
@@ -348,7 +348,7 @@ def test_reset_fault_memory_forgets_everything(monkeypatch):
     ctl._derate_match_polls = 2
     ctl._error_notify_keys.add("miner_error_2320")
     # Armed: the witness (3000, pre-fault) LOSSES to the fault power (1224),
-    # and the 3850 W crash floor inverts over the 1474 W ceiling — the
+    # and the 1650 W crash floor inverts over the 1474 W ceiling — the
     # ceiling wins.
     assert ctl._bounds(rig.clock.t) == (1474, 1474)
 
@@ -382,11 +382,11 @@ def test_crashes_inside_a_fault_episode_do_not_raise_the_floor(monkeypatch):
     ctl._count_restart(reg, rig.clock.t)
     assert ctl._crash_floor is None
     rig.clock.t += TTL + 60.0  # episode expired
+    rig.coord.data["wattage_limit"] = 1000  # a low-end crash after the episode
     ctl._count_restart(
         C._Regression(prev_uptime=1000, seen_uptime=10, ours=False, run_s=300), rig.clock.t
     )
-    # power in force in this rig is the fake's 4200 W limit
-    assert ctl._crash_floor == 4200 + C.CRASH_STEP_W
+    assert ctl._crash_floor == 1000 + C.CRASH_STEP_W
 
 
 def test_a_witness_after_the_fault_beats_it_but_a_stale_one_does_not(monkeypatch):

@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.1.6
+
+### Fixed
+
+- Restarts caused by our own v2 `adjust_power_limit` writes are attributed to
+  us even when the mining start edge arrives before the `Elapsed` regression.
+  Ownership now survives that edge and lives for 30 minutes (a restarting
+  miner can keep `Elapsed` from regressing until its 15-20 minute tune ends).
+  A large v3 `set.miner.power` step likewise owns its documented ~80 s
+  recycle for 5 minutes. Live 2026-11-21: limit-write restarts were counted
+  as crashes and ratcheted the crash floor 1300 → 1550 → 2275 → 4839 W,
+  inverting the bounds and preventing safety caps from clamping power while
+  the machine ran over-temperature.
+- A crash raises the crash floor only from low-end evidence: at most
+  `Power Min + 500 W`, or at/below the floor already learned. A 4589 W crash
+  no longer sets a 4839 W floor (which says nothing about holding Power Min)
+  and no longer refreshes an old floor's timestamp.
+- Hashrate-collapse notifications state whether a low-power floor was actually
+  recorded instead of always claiming one was raised.
+- Tests: `tests/test_crash_attribution.py` (6 cases) plus updated expectations.
+
+Existing installations may still hold inflated persisted crash floors; press
+**Reset Fault Memory** after upgrading to clear them.
+
 ## 2.1.5
 
 ### Fixed

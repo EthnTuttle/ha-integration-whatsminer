@@ -17,7 +17,7 @@ All power moves go out over v3 ``set.miner.power`` (restart-free once tuning
 finished); v2 ``adjust_power_limit`` only raises or lowers the ceiling in
 force, or carries a safety clamp during the boot window. Every commanded
 power is clamped to the fault bounds (see ``_bounds``): the floor is Power
-Min, or the last uncommanded short run's power plus ``CRASH_STEP_W`` while
+Min, or a low-end uncommanded short run's power plus ``CRASH_STEP_W`` while
 that crash evidence is fresh; the ceiling is Power Max, or the highest
 witnessed hold (else the power that faulted) plus ``PROVEN_MARGIN_W`` while
 fault evidence is fresh. On an inversion the ceiling wins: protect the
@@ -178,9 +178,19 @@ STABLE_RUN_S = 900.0
 # Fault evidence (crash, error code, external derate, hashrate collapse)
 # expires after this long; bounds revert to the configured min/max.
 FAULT_TTL_S = 7 * 86400.0
-# A crash says "the miner cannot hold this low": the fault floor becomes the
-# crashed power plus this step.
+# A low-end crash says "the miner cannot hold this low": the fault floor becomes
+# the crashed power plus this step. Crashes far above Power Min say nothing
+# about whether it can hold Power Min, so only this small low-end band (or a
+# crash at/below the floor already learned) contributes floor evidence.
 CRASH_STEP_W = 250
+CRASH_LOW_END_MARGIN_W = 2 * CRASH_STEP_W
+# A v2 limit write restarts btminer immediately, but an unreachable/restarting
+# miner can delay the Elapsed regression we can observe until its 15-20 minute
+# tune finishes. Keep ownership for 30 minutes, not just the 10-minute boot
+# hold. A v3 write is restart-free in the normal case, but its documented
+# recycle follows the write by about 80 s; five minutes covers that plus polls.
+LIMIT_RESTART_ATTRIBUTION_S = 1800.0
+V3_RECYCLE_ATTRIBUTION_S = 300.0
 # While fault evidence is armed the ceiling is the proven hold (or the fault
 # power, or Power Min) plus this margin.
 PROVEN_MARGIN_W = 250
@@ -439,8 +449,13 @@ class WhatsminerController:
         self._caps_active: frozenset[str] = frozenset()
         self._last_lockout_power_off: float = 0.0
         # Restart attribution. _pending_restart_at is consumed by the first
-        # uptime regression after one of our own commands.
+        # uptime regression after one of our own commands. Power writes keep
+        # the marker through a mining start edge: telemetry can show that edge
+        # before Elapsed regresses, and consuming it there misattributes the
+        # restart we just caused to the miner.
         self._pending_restart_at: float | None = None
+        self._pending_restart_window_s = RESUME_BOOT_HOLD_S
+        self._pending_restart_keep_for_regression = False
         self._pending_regression: _Regression | None = None
         # The power the run under a pending regression held; _op_in_force is
         # re-pointed at the limit the moment the regression is first seen, so
@@ -1551,9 +1566,9 @@ class WhatsminerController:
     def _bounds(self, now: float) -> tuple[int, int]:
         """The (floor, ceiling) every commanded power is clamped into. The one bounds source.
 
-        Floor: Power Min, or the last uncommanded short run's power plus
-        CRASH_STEP_W while that crash evidence is fresh (a crash says "the
-        miner cannot hold this low a power"). Ceiling: Power Max, or —
+        Floor: Power Min, or a low-end uncommanded short run's power plus
+        CRASH_STEP_W while that crash evidence is fresh (only such a crash says
+        "the miner cannot hold this low a power"). Ceiling: Power Max, or —
         while fault evidence (error code, external derate, hashrate
         collapse) is fresh — the highest witnessed hold, else the power
         that faulted, else Power Min, plus PROVEN_MARGIN_W. Noting the
@@ -1616,12 +1631,28 @@ class WhatsminerController:
         self._save_later()
 
     def _note_crash(self, power: int | None, now: float) -> None:
-        """An uncommanded short run: the miner cannot hold down there."""
+        """Learn a floor only from an uncommanded short run at the low end.
+
+        A crash at 4589 W says nothing about survival at a 1000 W Power Min.
+        Accept evidence near Power Min, or at/below the floor already learned
+        so a genuine crash loop at that floor can keep ratcheting upward. In
+        particular, do not refresh an old floor's timestamp for a high-power
+        crash: that would both re-arm stale evidence and risk inversion over a
+        proven/fault ceiling (whose safety precedence remains unchanged).
+        """
         if power is None or power <= 0:
             _LOGGER.info("Miner restarted on its own after a short run at an unknown power — logged only")
             return
-        self._crash_at = now
         old = self._crash_floor
+        low_end = self._power_min + CRASH_LOW_END_MARGIN_W
+        if power > low_end and (old is None or power > old):
+            _LOGGER.warning(
+                "Miner restarted on its own after a short run at %dW — not low-power crash "
+                "evidence (Power Min %dW, low-end cutoff %dW, current floor %s); floor unchanged",
+                power, self._power_min, low_end, f"{old}W" if old is not None else "none",
+            )
+            return
+        self._crash_at = now
         self._crash_floor = max(old or 0, power + CRASH_STEP_W)
         _LOGGER.warning(
             "Miner restarted on its own after a short run at %dW — crash floor is now %dW "
@@ -1853,6 +1884,7 @@ class WhatsminerController:
         """A confirmed Elapsed regression: attribute it, and learn from it if a short run."""
         if regression.ours:
             self._pending_restart_at = None
+            self._pending_restart_keep_for_regression = False
         self._last_restart_ours = regression.ours
         power, self._regression_power = self._regression_power, None
         if power is None:
@@ -1887,20 +1919,28 @@ class WhatsminerController:
             )
             return
         _LOGGER.warning(
-            "Miner restarted on its own after hashing %.0fs at %dW — crash evidence",
+            "Miner restarted on its own after hashing %.0fs at %dW — uncommanded short run",
             regression.run_s, power,
         )
         self._note_crash(power, now)
 
     # ----------------------------------------------------- restart plumbing
 
-    def _mark_actuation(self) -> None:
-        """We just sent a command that stops or restarts btminer."""
+    def _mark_actuation(
+        self, *, window_s: float = RESUME_BOOT_HOLD_S, keep_for_regression: bool = False
+    ) -> None:
+        """We just sent a command that stops or may restart btminer.
+
+        Power writes use ``keep_for_regression``: a start edge is not proof
+        that Elapsed has reset yet, so it must not consume their attribution.
+        """
         self._pending_restart_at = time()
+        self._pending_restart_window_s = window_s
+        self._pending_restart_keep_for_regression = keep_for_regression
 
     def _pending_restart_is_ours(self, now: float) -> bool:
         pending = self._pending_restart_at
-        return pending is not None and now - pending < RESUME_BOOT_HOLD_S
+        return pending is not None and now - pending < self._pending_restart_window_s
 
     def _claim_start(self, now: float) -> bool:
         """At a mining start edge: did one of our own commands cause this boot?
@@ -1916,7 +1956,8 @@ class WhatsminerController:
         if self._pending_regression is not None:
             return ours or self._pending_regression.ours
         if not ours and self._pending_restart_is_ours(now):
-            self._pending_restart_at = None
+            if not self._pending_restart_keep_for_regression:
+                self._pending_restart_at = None
             ours = True
         return ours
 
@@ -2199,7 +2240,9 @@ class WhatsminerController:
             return False
         if not safety:
             self._spend_epoch_write()
-        self._mark_actuation()
+        self._mark_actuation(
+            window_s=LIMIT_RESTART_ATTRIBUTION_S, keep_for_regression=True
+        )
         now = time()
         self._sent_limit = new_power
         self._sent_limit_at = now
@@ -2346,6 +2389,11 @@ class WhatsminerController:
         self._v3_transport_fails = 0
         self._v3_error = None
         self._spend_epoch_write()
+        # Normally restart-free, but a large step can recycle btminer ~80 s
+        # later. Own that regression instead of learning a spurious crash floor.
+        self._mark_actuation(
+            window_s=V3_RECYCLE_ATTRIBUTION_S, keep_for_regression=True
+        )
         if self._power_fallback_notified:
             self._power_fallback_notified = False
             persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_power_fallback")
@@ -2367,7 +2415,7 @@ class WhatsminerController:
         if hashrate > 0 and draw > 0 and prev is not None and prev != new_power:
             self._collapse_watch = (now + V3_COLLAPSE_WATCH_S, hashrate / draw, int(prev), int(new_power))
             self._collapse_polls = 0
-        _LOGGER.info("Power regulation: set.miner.power %dW (%s, no restart)", new_power, why)
+        _LOGGER.info("Power regulation: set.miner.power %dW (%s, normally no restart)", new_power, why)
         self._save_later()
         return True
 
@@ -2411,9 +2459,19 @@ class WhatsminerController:
                     if self._collapse_polls >= V3_COLLAPSE_POLLS:
                         self._collapse_watch = None
                         self._collapse_polls = 0
-                        # The collapse is crash evidence at the stepped-to
-                        # power: that is the power the miner failed to hold.
+                        # The collapse is assessed at the stepped-to power;
+                        # only a low-end failure is crash-floor evidence.
                         self._note_crash(stepped, now)
+                        if self._crash_at == now and self._crash_floor is not None:
+                            floor_result = (
+                                f"The low-power crash floor is {self._crash_floor} W while the "
+                                "evidence is fresh. Press Reset Fault Memory to re-test lower powers."
+                            )
+                        else:
+                            floor_result = (
+                                f"The {stepped} W failure is above the low-end crash band, so the "
+                                "fault floor was not raised."
+                            )
                         # Notify-only: the step is NOT undone. An undoing
                         # adjust_power_limit would answer a documented side
                         # effect of one dynamic write (a tuning event) with a
@@ -2430,9 +2488,8 @@ class WhatsminerController:
                             "Hashrate collapsed after a power reduction",
                             f"After set.miner.power lowered the miner from {prev} W to {stepped} W its "
                             f"hashrate fell to {hashrate:.1f} TH at {draw:.0f} W. The controller left "
-                            f"the power in place (an undoing power-limit write would restart mining) "
-                            f"and raised its fault floor to {self._crash_floor} W while the evidence "
-                            "is fresh. Press Reset Fault Memory to re-test lower powers.",
+                            f"the power in place (an undoing power-limit write would restart mining). "
+                            f"{floor_result}",
                         )
                         self._regulation_error = "collapse-observed-no-undo"
                         self._regulation_error_tpw = V3_COLLAPSE_FRAC * before_tpw

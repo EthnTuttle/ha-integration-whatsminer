@@ -376,7 +376,8 @@ def test_tuned_change_goes_out_as_set_miner_power(monkeypatch):
         assert cmds(rig, "set_power_limit") == []
         (sent,) = cmds(rig, "set_miner_power")
         assert sent < 4200
-        assert rig.ctl._pending_restart_at is None  # not a restart: not attributed as ours
+        # Normally no restart, but own the documented delayed recycle if one follows.
+        assert rig.ctl._pending_restart_at is not None
         assert rig.ctl._op_target == sent and rig.ctl._op_in_force == sent
         assert rig.ctl._op_established is True
         reg = rig.pid_state["power_command"]
@@ -877,13 +878,15 @@ def test_the_crash_floor_is_clamped_at_power_max(monkeypatch):
 
     async def go():
         await rig.setup()
-        rig.ctl._note_crash(4900, rig.clock.t)
-        assert rig.ctl._crash_floor == 5150  # power + step is allowed to exceed names…
+        # A crash loop at each newly learned floor can ratchet all the way up.
+        while (rig.ctl._crash_floor or 1000) <= 5000:
+            rig.ctl._note_crash(rig.ctl._crash_floor or 1000, rig.clock.t)
+        assert rig.ctl._crash_floor == 5250  # power + step may exceed names…
         floor, ceiling = rig.ctl._bounds(rig.clock.t)
         assert floor == 5000  # …but the bound itself clamps at Power Max
         assert ceiling == 5000
-        rig.ctl._note_crash(4000, rig.clock.t)  # still fresh: only ever ratchets up
-        assert rig.ctl._crash_floor == 5150
+        rig.ctl._note_crash(4000, rig.clock.t)  # below the floor: never lowers it
+        assert rig.ctl._crash_floor == 5250
 
     run_async(go())
 
@@ -959,9 +962,9 @@ def test_on_inverted_bounds_the_ceiling_wins(monkeypatch):
 
 
 def test_hashrate_collapse_after_a_reduction_is_observed_not_undone(monkeypatch):
-    """v2.1: the collapse is reported (log, notification, regulation error), and the
-    crash floor still arms — but no corrective adjust_power_limit answers a documented
-    side effect of one dynamic write with a certain restart."""
+    """v2.1: the collapse is reported (log, notification, regulation error), but no
+    corrective adjust_power_limit answers a documented side effect of one dynamic
+    write with a certain restart. Above the low-end band it raises no crash floor."""
     rig = v3_rig(monkeypatch, store={"power_limit_w": 5000, "regulated_power_w": 2500})
     rig.mining(True, limit=5000)
     rig.coord.data.update({"wattage": 2500, "hashrate_5s": 100.0})
@@ -983,12 +986,14 @@ def test_hashrate_collapse_after_a_reduction_is_observed_not_undone(monkeypatch)
         await rig.run(3)
         assert cmds(rig, "set_power_limit") == []  # observed, never undone
         assert cmds(rig, "set_miner_power") == [2500, 1800]  # no churn either
-        assert rig.ctl._crash_floor == 2050  # crash evidence at the failed 1800 W + 250 W
-        assert rig.ctl._bounds(rig.clock.t)[0] == 2050
+        # 1800 W is above the low-end band: failure there proves nothing about
+        # holding the 1000 W Power Min, so it must not invent a 2050 W floor.
+        assert rig.ctl._crash_floor is None
+        assert rig.ctl._bounds(rig.clock.t)[0] == 1000
         assert "whatsminer_power_collapse" in [k for k, _, _ in pn.created]
-        assert "whatsminer_crash_floor" in [k for k, _, _ in pn.created]
-        assert rig.pid_state["faults"]["floor_w"] == 2050
-        assert Store.saved[KEY]["crash_floor"] == 2050
+        assert "whatsminer_crash_floor" not in [k for k, _, _ in pn.created]
+        assert rig.pid_state["faults"]["floor_w"] == 1000
+        assert Store.saved[KEY]["crash_floor"] is None
         # The regulation error is published and self-clears on a stable read
         assert rig.pid_state["power_command"]["regulation_error"] == "collapse-observed-no-undo"
         rig.coord.data.update({"hashrate_5s": 80.0})  # 44 TH/kW: recovered
